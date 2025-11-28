@@ -37,19 +37,10 @@ class CoinGeckoFetcher:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
         
-    def get_market_data(self, coin_ids: List[str]) -> pd.DataFrame:
-        """
-        Fetch current market data for specified coins
-        
-        Args:
-            coin_ids: List of CoinGecko coin IDs (e.g., ['bitcoin', 'ethereum'])
-            
-        Returns:
-            DataFrame with market data including price, volume, market cap, etc.
-            
-        Raises:
-            requests.RequestException: If API request fails
-        """
+    def get_market_data(self, coin_ids: List[str], max_retries: int = 3) -> pd.DataFrame:
+    """Fetch market data with retry logic and exponential backoff"""
+    
+    for attempt in range(max_retries):
         self._rate_limit()
         
         url = f"{self.base_url}/coins/markets"
@@ -64,22 +55,44 @@ class CoinGeckoFetcher:
         }
         
         try:
-            logger.info(f"Fetching market data for: {', '.join(coin_ids)}")
+            logger.info(f"Fetching market data for: {', '.join(coin_ids)} (attempt {attempt + 1})")
             response = requests.get(url, params=params, timeout=self.timeout)
-            response.raise_for_status()
             
+            # Handle 429 specifically
+            if response.status_code == 429:
+                wait_time = (2 ** attempt) * 10  # 10s, 20s, 40s
+                logger.warning(f"⚠️ Rate limited. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            
+            response.raise_for_status()
             data = response.json()
+            
             if not data:
-                logger.warning(f"No market data returned for: {coin_ids}")
+                logger.warning(f"No data returned for: {coin_ids}")
                 return pd.DataFrame()
-                
+            
             df = pd.DataFrame(data)
-            logger.info(f"Successfully fetched market data for {len(df)} coins")
+            logger.info(f"✅ Successfully fetched data for {len(df)} coins")
             return df
             
-        except requests.RequestException as e:
-            logger.error(f"Error fetching market data: {e}")
+        except requests.exceptions.HTTPError as e:
+            if attempt < max_retries - 1:
+                wait_time = (2 ** attempt) * 10
+                logger.warning(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            logger.error(f"❌ Failed after {max_retries} attempts: {e}")
             raise
+            
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+            raise
+    
+    return pd.DataFrame()
             
     def get_historical_data(self, coin_id: str, days: int = 180) -> pd.DataFrame:
         """
