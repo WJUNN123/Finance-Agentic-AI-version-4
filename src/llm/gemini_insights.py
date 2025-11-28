@@ -6,10 +6,9 @@ Generates AI-powered investment insights using Google's Gemini 2.0 Flash
 import google.generativeai as genai
 from typing import Dict, List, Optional
 import logging
-import re
+import pandas as pd
 
 logger = logging.getLogger(__name__)
-
 
 class GeminiInsightGenerator:
     """Generates investment insights using Gemini 2.0 Flash"""
@@ -19,17 +18,8 @@ class GeminiInsightGenerator:
         api_key: str,
         model_name: str = "gemini-2.0-flash",
         temperature: float = 0.3,
-        max_tokens: int = 500
+        max_tokens: int = 800  # Increased for more detailed reasoning
     ):
-        """
-        Initialize Gemini insight generator
-        
-        Args:
-            api_key: Google Gemini API key
-            model_name: Model identifier
-            temperature: Generation temperature (0-1)
-            max_tokens: Maximum output tokens
-        """
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -37,86 +27,52 @@ class GeminiInsightGenerator:
         try:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel(model_name)
-            logger.info(f"Gemini model initialized: {model_name}")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
             raise
             
     def generate_insights(
         self,
-        coin_id: str,
         coin_symbol: str,
         market_data: Dict,
-        sentiment_score: float,
+        sentiment_data: Dict, # Changed to accept full sentiment dict
         technical_indicators: Dict,
-        forecast_data: Optional[Dict] = None,
-        top_headlines: Optional[List[str]] = None,
-        risk_tolerance: str = "medium",
+        prediction_data: Dict, # Changed to accept full prediction details
+        top_headlines: List[str],
         horizon_days: int = 7
     ) -> Dict:
         """
         Generate comprehensive investment insights
-        
-        Args:
-            coin_id: Cryptocurrency ID
-            coin_symbol: Cryptocurrency symbol
-            market_data: Current market data
-            sentiment_score: Aggregated sentiment score (-1 to +1)
-            technical_indicators: RSI, momentum, etc.
-            forecast_data: Price forecast information
-            top_headlines: Recent news headlines
-            risk_tolerance: User's risk tolerance (low/medium/high)
-            horizon_days: Investment time horizon
-            
-        Returns:
-            Dictionary with recommendation, score, insight text, and metadata
         """
-        # Build comprehensive prompt
+        # Build the data-rich prompt
         prompt = self._build_prompt(
-            coin_id=coin_id,
             coin_symbol=coin_symbol,
             market_data=market_data,
-            sentiment_score=sentiment_score,
-            technical_indicators=technical_indicators,
-            forecast_data=forecast_data,
-            top_headlines=top_headlines,
-            risk_tolerance=risk_tolerance,
-            horizon_days=horizon_days
+            sentiment_data=sentiment_data,
+            tech=technical_indicators,
+            preds=prediction_data,
+            headlines=top_headlines,
+            horizon=horizon_days
         )
         
         try:
-            logger.info(f"Generating insights for {coin_symbol}...")
-            
-            # Configure generation
-            generation_config = genai.types.GenerationConfig(
+            config = genai.types.GenerationConfig(
                 temperature=self.temperature,
-                max_output_tokens=self.max_tokens,
-                top_p=0.9,
-                top_k=40
+                max_output_tokens=self.max_tokens
             )
             
-            # Generate response
-            response = self.model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-            
+            response = self.model.generate_content(prompt, generation_config=config)
             insight_text = response.text.strip()
             
-            # Extract recommendation
-            recommendation = self._extract_recommendation(insight_text)
+            # Helper to extract a strict recommendation from the text
+            rec = self._extract_recommendation(insight_text)
             
-            # Calculate confidence score
-            score = self._calculate_score(
-                insight_text=insight_text,
-                sentiment_score=sentiment_score,
-                technical_indicators=technical_indicators
-            )
-            
-            logger.info(f"Generated insights successfully. Recommendation: {recommendation}")
-            
+            # We trust the LLM's synthesis for the score now, 
+            # rather than a manual calculation
+            score = self._extract_confidence_score(insight_text)
+
             return {
-                "recommendation": recommendation,
+                "recommendation": rec,
                 "score": score,
                 "insight": insight_text,
                 "source": "gemini",
@@ -125,242 +81,122 @@ class GeminiInsightGenerator:
             
         except Exception as e:
             logger.error(f"Error generating insights: {e}")
-            # Return fallback
-            return self._generate_fallback_insight(
-                sentiment_score=sentiment_score,
-                technical_indicators=technical_indicators
+            return self._get_fallback_response()
+
+    def _build_prompt(self, coin_symbol, market_data, sentiment_data, tech, preds, headlines, horizon):
+        """Constructs a prompt that acts as a Data Science synthesiser"""
+        
+        # 1. Format Market Data
+        curr_price = market_data.get('price_usd', 0)
+        
+        # 2. Format Predictions (Calculate ROI)
+        pred_text = "No predictive models available."
+        if preds and preds.get('ensemble'):
+            ensemble = preds['ensemble']
+            final_pred = ensemble[-1]
+            pred_roi = ((final_pred - curr_price) / curr_price) * 100
+            
+            # Analyze the shape of the curve (is it volatile?)
+            trend_shape = "linear"
+            if len(ensemble) > 2:
+                mid_point = ensemble[len(ensemble)//2]
+                if mid_point > curr_price and mid_point > final_pred:
+                    trend_shape = "hump (rise then fall)"
+                elif mid_point < curr_price and mid_point < final_pred:
+                    trend_shape = "dip (fall then recover)"
+            
+            pred_text = (
+                f"Hybrid LSTM+XGBoost Model Forecast ({horizon} days):\n"
+                f"   - Predicted End Price: ${final_pred:,.2f}\n"
+                f"   - Predicted ROI: {pred_roi:+.2f}%\n"
+                f"   - Trend Shape: {trend_shape}"
             )
-            
-    def _build_prompt(
-        self,
-        coin_id: str,
-        coin_symbol: str,
-        market_data: Dict,
-        sentiment_score: float,
-        technical_indicators: Dict,
-        forecast_data: Optional[Dict],
-        top_headlines: Optional[List[str]],
-        risk_tolerance: str,
-        horizon_days: int
-    ) -> str:
-        """Build comprehensive analysis prompt"""
+
+        # 3. Format Sentiment
+        sent_score = sentiment_data.get('score', 0)
+        breakdown = sentiment_data.get('breakdown', {'positive': 0, 'negative': 0})
+        sent_text = (
+            f"News Sentiment (RoBERTa Model):\n"
+            f"   - Aggregate Score: {sent_score:.2f} (Scale: -1.0 to +1.0)\n"
+            f"   - Breakdown: {breakdown.get('positive'):.1f}% Positive, {breakdown.get('negative'):.1f}% Negative"
+        )
+
+        # 4. Format Technicals
+        rsi = tech.get('rsi', 50)
+        bb_pos = "Neutral"
+        if tech.get('bb_upper') and curr_price > tech['bb_upper']: bb_pos = "Above Upper Bollinger Band (Overextended)"
+        elif tech.get('bb_lower') and curr_price < tech['bb_lower']: bb_pos = "Below Lower Bollinger Band (Oversold)"
         
-        # Format market data
-        price = market_data.get("price_usd", 0)
-        pct_24h = market_data.get("pct_change_24h", 0)
-        pct_7d = market_data.get("pct_change_7d", 0)
-        market_cap = market_data.get("market_cap", 0)
-        volume = market_data.get("volume_24h", 0)
-        
-        # Format technical indicators
-        rsi = technical_indicators.get("rsi", 50)
-        rsi_zone = self._get_rsi_zone(rsi)
-        
-        # Format headlines
-        headlines_text = ""
-        if top_headlines:
-            headlines_text = "\n\nTop recent headlines:\n" + "\n".join(
-                [f"- {h}" for h in top_headlines[:5]]
-            )
-            
-        # Format forecast
-        forecast_text = ""
-        if forecast_data:
-            last_pred = forecast_data.get("last_prediction")
-            if last_pred:
-                change_pct = ((last_pred - price) / price) * 100
-                forecast_text = f"\n\n7-day forecast: ${last_pred:,.2f} ({change_pct:+.1f}%)"
-                
-        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
+        tech_text = (
+            f"Technical Indicators:\n"
+            f"   - RSI (14): {rsi:.1f} ({self._get_rsi_zone(rsi)})\n"
+            f"   - Bollinger Bands: {bb_pos}\n"
+            f"   - Trend: {tech.get('trend', 'Neutral')}\n"
+            f"   - Volatility: {tech.get('volatility', 0):.4f}"
+        )
 
-MARKET DATA:
-- Current Price: ${price:,.2f}
-- Market Cap: ${market_cap:,.0f}
-- 24h Volume: ${volume:,.0f}
-- 24h Change: {pct_24h:.2f}%
-- 7d Change: {pct_7d:.2f}%
-- RSI (14): {rsi:.1f} ({rsi_zone})
+        return f"""
+You are a Senior Crypto Investment Analyst. Synthesize the following data sources to provide a final recommendation for {coin_symbol}.
 
-SENTIMENT ANALYSIS:
-- News Sentiment Score: {sentiment_score:.3f} (range: -1 to +1, where +1 is very positive)
+### DATA SOURCES
 
-ANALYSIS PARAMETERS:
-- Risk Tolerance: {risk_tolerance}
-- Investment Horizon: {horizon_days} days{headlines_text}{forecast_text}
+1. {pred_text}
+2. {sent_text}
+3. {tech_text}
+4. Recent Headlines:
+   {chr(10).join(['- ' + h for h in headlines[:3]])}
 
-Please provide:
-1. A clear BUY/SELL/HOLD recommendation with reasoning
-2. Detailed insights covering:
-   - Sentiment analysis interpretation
-   - Technical momentum (24h and 7d trends)
-   - RSI analysis and what it suggests
-   - Risk factors to consider
-   - Key catalysts to watch
+### INSTRUCTIONS
+Your goal is to weigh conflicting signals.
+- If the AI Model predicts a price RISE, but Sentiment is NEGATIVE, be cautious.
+- If Technicals are OVERBOUGHT (RSI > 70) but Model predicts a RISE, warn of a pullback.
+- If all signals align (Model Up + Sentiment Positive + Technicals Bullish), this is a Strong Buy.
 
-Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
+### OUTPUT FORMAT
+Provide a response in the following format:
 
-Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
+**Analysis Synthesis**
+[A concise paragraph explaining how the model prediction aligns or conflicts with news sentiment and technicals.]
 
-        return prompt
-        
-    def _extract_recommendation(self, insight_text: str) -> str:
-        """Extract BUY/SELL/HOLD recommendation from insight text"""
-        text_lower = insight_text.lower()
-        
-        # Strong buy signals
-        if any(phrase in text_lower for phrase in [
-            "strong buy", "buy recommendation", "recommend buying"
-        ]):
-            return "BUY"
-            
-        # Buy signals
-        if any(phrase in text_lower for phrase in [
-            "buy", "accumulate", "long position", "enter position"
-        ]):
-            if "avoid" not in text_lower and "don't" not in text_lower:
-                return "BUY"
-                
-        # Sell signals
-        if any(phrase in text_lower for phrase in [
-            "sell", "short", "avoid", "exit", "close position"
-        ]):
-            return "SELL / AVOID"
-            
-        # Hold signals
-        if any(phrase in text_lower for phrase in [
-            "hold", "wait", "neutral", "sideways", "consolidat"
-        ]):
-            return "HOLD / WAIT"
-            
-        # Default to hold
+**Key Risks**
+[Bullet points of specific risks based on the data (e.g., "Low liquidity," "RSI divergence," "Negative news flow")]
+
+**Confidence Score**
+[A number between 0 and 100 based on data alignment]
+
+**Recommendation**
+[BUY / SELL / HOLD]
+"""
+
+    def _extract_recommendation(self, text: str) -> str:
+        if "Recommendation" in text:
+            last_part = text.split("Recommendation")[-1].upper()
+            if "BUY" in last_part: return "BUY"
+            if "SELL" in last_part: return "SELL / AVOID"
         return "HOLD / WAIT"
-        
-    def _calculate_score(
-        self,
-        insight_text: str,
-        sentiment_score: float,
-        technical_indicators: Dict
-    ) -> float:
-        """Calculate confidence score for recommendation"""
-        
-        text_lower = insight_text.lower()
-        
-        # Start with sentiment
-        score = 0.4 * sentiment_score
-        
-        # Add technical momentum
-        pct_24h = technical_indicators.get("pct_24h", 0)
-        pct_7d = technical_indicators.get("pct_7d", 0)
-        
-        if pct_24h:
-            momentum_24 = max(-1.0, min(1.0, pct_24h / 15.0))
-            score += 0.2 * momentum_24
-            
-        if pct_7d:
-            momentum_7 = max(-1.0, min(1.0, pct_7d / 40.0))
-            score += 0.2 * momentum_7
-            
-        # Adjust based on RSI
-        rsi = technical_indicators.get("rsi", 50)
-        if rsi >= 70:
-            score -= 0.15  # Overbought
-        elif rsi <= 30:
-            score += 0.15  # Oversold
-            
-        # Adjust based on LLM sentiment
-        positive_words = [
-            "bullish", "positive", "strong", "buy", "upward", 
-            "growth", "opportunity", "momentum"
-        ]
-        negative_words = [
-            "bearish", "negative", "weak", "sell", "downward", 
-            "risk", "caution", "decline"
-        ]
-        
-        pos_count = sum(1 for word in positive_words if word in text_lower)
-        neg_count = sum(1 for word in negative_words if word in text_lower)
-        
-        if pos_count > neg_count:
-            score += 0.1 * min(pos_count - neg_count, 3) / 3
-        elif neg_count > pos_count:
-            score -= 0.1 * min(neg_count - pos_count, 3) / 3
-            
-        # Clamp to [-1, 1]
-        return max(-1.0, min(1.0, score))
-        
-    def _get_rsi_zone(self, rsi: float) -> str:
-        """Get RSI zone description"""
-        if rsi >= 70:
-            return "Overbought"
-        elif rsi <= 30:
-            return "Oversold"
-        else:
-            return "Neutral"
-            
-    def _generate_fallback_insight(
-        self,
-        sentiment_score: float,
-        technical_indicators: Dict
-    ) -> Dict:
-        """Generate rule-based insight when Gemini is unavailable"""
-        
-        pct_24h = technical_indicators.get("pct_24h", 0)
-        pct_7d = technical_indicators.get("pct_7d", 0)
-        rsi = technical_indicators.get("rsi", 50)
-        
-        # Determine recommendation
-        if sentiment_score > 0.3 and pct_7d > 5 and rsi < 70:
-            recommendation = "BUY"
-            score = 0.6
-        elif sentiment_score < -0.3 or rsi > 75:
-            recommendation = "SELL / AVOID"
-            score = -0.5
-        else:
-            recommendation = "HOLD / WAIT"
-            score = 0.0
-            
-        insight = f"""**Recommendation: {recommendation}**
 
-**Sentiment Analysis**: {'Positive' if sentiment_score > 0 else 'Negative' if sentiment_score < 0 else 'Neutral'} market sentiment (score: {sentiment_score:.2f})
+    def _extract_confidence_score(self, text: str) -> float:
+        import re
+        # Look for "Confidence Score" followed by a number
+        match = re.search(r"Confidence Score.*?(\d{1,3})", text, re.IGNORECASE | re.DOTALL)
+        if match:
+            return float(match.group(1)) / 100.0
+        return 0.5
 
-**Technical Momentum**: 
-- 24h: {pct_24h:+.2f}%
-- 7d: {pct_7d:+.2f}%
+    def _get_rsi_zone(self, rsi):
+        if rsi >= 70: return "Overbought"
+        if rsi <= 30: return "Oversold"
+        return "Neutral"
 
-**RSI Analysis**: RSI is at {rsi:.1f}, indicating {self._get_rsi_zone(rsi).lower()} conditions.
-
-**Note**: This is a rule-based analysis. AI-powered insights are temporarily unavailable.
-
-**Disclaimer**: This is educational content only, not financial advice."""
-
-        return {
-            "recommendation": recommendation,
-            "score": score,
-            "insight": insight,
-            "source": "fallback"
-        }
-
-
-# Convenience function
-def generate_insights(api_key: str, **kwargs) -> Dict:
-    """
-    Generate insights with automatic error handling
-    
-    Args:
-        api_key: Gemini API key
-        **kwargs: Arguments for generate_insights method
-        
-    Returns:
-        Insights dictionary
-    """
-    try:
-        generator = GeminiInsightGenerator(api_key=api_key)
-        return generator.generate_insights(**kwargs)
-    except Exception as e:
-        logger.error(f"Failed to generate insights: {e}")
+    def _get_fallback_response(self):
         return {
             "recommendation": "HOLD / WAIT",
             "score": 0.0,
-            "insight": "Unable to generate insights. Please try again later.",
-            "source": "error"
+            "insight": "AI unavailable. Based on standard rules: Check RSI and Trend manually.",
+            "source": "fallback"
         }
+
+# Singleton accessor
+def generate_insights(api_key: str, **kwargs) -> Dict:
+    generator = GeminiInsightGenerator(api_key=api_key)
+    return generator.generate_insights(**kwargs)
