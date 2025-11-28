@@ -204,34 +204,34 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
         return prompt
         
     def _extract_recommendation(self, text):
-    t = text.lower()
-
-    # Priority 1 – explicit structured output (best case)
-    if "recommendation:" in t:
-        if "buy" in t:
-            return "BUY"
-        if "sell" in t or "avoid" in t:
-            return "SELL / AVOID"
-        if "hold" in t or "wait" in t:
-            return "HOLD / WAIT"
-
-    # Count keywords — avoids false triggers
-    buy_score = t.count("buy") + t.count("accumulate")
-    sell_score = t.count("sell") + t.count("avoid") + t.count("exit")
-    hold_score = t.count("hold") + t.count("neutral") + t.count("wait")
-
-    # Adjust for negations (fixes “not recommended to sell”)
-    if "not sell" in t or "avoid selling" in t or "selling not recommended" in t:
-        sell_score -= 2
-
-    # Choose the highest score
-    scores = {
-        "BUY": buy_score,
-        "SELL / AVOID": sell_score,
-        "HOLD / WAIT": hold_score
-    }
-
-    return max(scores, key=scores.get)
+        t = text.lower()
+    
+        # Priority 1 – explicit structured output (best case)
+        if "recommendation:" in t:
+            if "buy" in t:
+                return "BUY"
+            if "sell" in t or "avoid" in t:
+                return "SELL / AVOID"
+            if "hold" in t or "wait" in t:
+                return "HOLD / WAIT"
+    
+        # Count keywords — avoids false triggers
+        buy_score = t.count("buy") + t.count("accumulate")
+        sell_score = t.count("sell") + t.count("avoid") + t.count("exit")
+        hold_score = t.count("hold") + t.count("neutral") + t.count("wait")
+    
+        # Adjust for negations (fixes “not recommended to sell”)
+        if "not sell" in t or "avoid selling" in t or "selling not recommended" in t:
+            sell_score -= 2
+    
+        # Choose the highest score
+        scores = {
+            "BUY": buy_score,
+            "SELL / AVOID": sell_score,
+            "HOLD / WAIT": hold_score
+        }
+    
+        return max(scores, key=scores.get)
         
     def _calculate_score(
         self,
