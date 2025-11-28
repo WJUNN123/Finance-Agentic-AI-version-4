@@ -11,8 +11,8 @@ feedparser
 scikit-learn
 xgboost
 tensorflow
-# keras is usually included in tensorflow now, but keeping it unpinned is fine
 keras
+tf-keras
 
 # NLP and Sentiment
 transformers
