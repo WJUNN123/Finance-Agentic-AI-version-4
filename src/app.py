@@ -24,7 +24,7 @@ from data_fetchers.coingecko import get_fetcher as get_cg_fetcher
 from data_fetchers.news import get_fetcher as get_news_fetcher
 from sentiment.analyzer import get_analyzer
 from models.hybrid_predictor import train_and_predict
-from llm.gemini_insights import generate_insights
+import llm.gemini_insights as gemini_llm
 from utils.technical_indicators import get_all_indicators
 
 # Configure logging
@@ -327,7 +327,7 @@ def analyze_cryptocurrency(
         
         if API_KEYS.get('gemini'):
             try:
-                insights = generate_insights(
+                insights = gemini_llm.generate_insights(
                     api_key=API_KEYS['gemini'],
                     coin_id=coin_id,
                     coin_symbol=coin_symbol,
