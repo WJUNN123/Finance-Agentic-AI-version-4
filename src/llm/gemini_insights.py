@@ -1,5 +1,5 @@
 """
-Gemini LLM Integration (Robust JSON Mode)
+Gemini LLM Integration (Robust)
 Generates AI-powered investment insights using Google's Gemini 2.0 Flash
 """
 
@@ -7,6 +7,7 @@ import google.generativeai as genai
 from typing import Dict, List, Optional
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class GeminiInsightGenerator:
         )
         
         try:
-            # Force JSON output structure
+            # Configure specifically for JSON response
             config = genai.types.GenerationConfig(
                 temperature=self.temperature,
                 response_mime_type="application/json",
@@ -62,30 +63,39 @@ class GeminiInsightGenerator:
             
             response = self.model.generate_content(prompt, generation_config=config)
             
-            # Robust JSON Parsing
+            # --- Robust Parsing ---
             try:
+                # 1. Try direct JSON load
                 result = json.loads(response.text)
-            except json.JSONDecodeError:
-                # Handle cases where model wraps JSON in markdown code blocks
-                clean_text = response.text.replace('```json', '').replace('```', '').strip()
-                result = json.loads(clean_text)
-            
-            # Safe Extraction (prevents KeyErrors)
-            synthesis = result.get('analysis_synthesis', 'Detailed synthesis unavailable for this request.')
-            risks = result.get('key_risks', ['General Market Risk'])
+            except Exception:
+                # 2. Try cleaning markdown syntax if model added ```json ... ```
+                clean_text = response.text.replace("```json", "").replace("```", "").strip()
+                try:
+                    result = json.loads(clean_text)
+                except:
+                    # 3. Fallback if JSON fails completely
+                    return {
+                        "recommendation": "HOLD / WAIT",
+                        "score": 0.5,
+                        "insight": "AI Error: Could not parse response format. Please try again.",
+                        "source": "error"
+                    }
+
+            # Safe extraction with defaults
+            synthesis = result.get('analysis_synthesis', 'No detailed analysis provided.')
+            risks = result.get('key_risks', [])
             score = result.get('confidence_score', 50)
             rec_raw = result.get('recommendation', 'HOLD')
+            
+            # Format risks as bullet points
+            risk_text = "\n".join([f"- {r}" for r in risks]) if risks else "- General Market Volatility"
 
-            # Format the output for the UI
-            risk_list = "\n".join([f"- {r}" for r in risks])
             formatted_insight = (
                 f"**Analysis Synthesis**\n{synthesis}\n\n"
-                f"**Key Risks**\n{risk_list}\n\n"
-                f"**Confidence Score**\n{score}\n\n"
-                f"**Recommendation**\n{rec_raw}"
+                f"**Key Risks**\n{risk_text}"
             )
 
-            # Map simpler labels to UI colors
+            # Map to UI labels
             rec_map = {
                 "BUY": "BUY",
                 "SELL": "SELL / AVOID",
@@ -105,7 +115,7 @@ class GeminiInsightGenerator:
             return {
                 "recommendation": "HOLD / WAIT",
                 "score": 0.0,
-                "insight": f"AI Generation Error: {str(e)}",
+                "insight": f"System Error: {str(e)}",
                 "source": "error"
             }
 
@@ -113,32 +123,35 @@ class GeminiInsightGenerator:
         curr_price = market_data.get('price_usd', 0)
         
         # Calculate ROI
-        pred_text = "No models available."
+        pred_text = "No predictive models available."
         if preds and preds.get('ensemble') and len(preds['ensemble']) > 0:
             final = preds['ensemble'][-1]
-            roi = ((final - curr_price) / curr_price) * 100
-            pred_text = f"Model Forecast: ${final:,.2f} ({roi:+.2f}% ROI)"
+            if curr_price > 0:
+                roi = ((final - curr_price) / curr_price) * 100
+                pred_text = f"Model Forecast: ${final:,.2f} ({roi:+.2f}% ROI)"
         
         sent_score = sentiment_data.get('score', 0)
         rsi = tech.get('rsi', 50)
+        trend = tech.get('trend', 'Neutral')
         
         return f"""
-        Act as a Crypto Analyst. Analyze this data for {coin_symbol}:
+        Act as a Crypto Investment Analyst. Analyze the data below for {coin_symbol}:
+        
         1. {pred_text}
-        2. Sentiment Score: {sent_score:.2f}
-        3. RSI: {rsi:.1f}
-        4. Trend: {tech.get('trend', 'Neutral')}
+        2. Sentiment Score: {sent_score:.2f} (-1.0 to +1.0)
+        3. RSI (14): {rsi:.1f}
+        4. Trend: {trend}
         
-        Produce a JSON response with:
-        - recommendation (BUY, SELL, or HOLD)
-        - confidence_score (0-100)
-        - analysis_synthesis (Short paragraph)
-        - key_risks (List of strings)
+        Your task:
+        - Determine a recommendation (BUY, SELL, HOLD).
+        - Assign a confidence score (0-100).
+        - Write a brief synthesis paragraph explaining your logic.
+        - List 2-3 key risks.
         
-        Logic:
-        - If Model predicts drop > 3% AND Trend is Down -> SELL
-        - If Model predicts drop but RSI < 30 -> HOLD (Risk of bounce)
-        - If Model predicts rise > 3% -> BUY
+        Logic Guide:
+        - If Model predicts significant Drop AND Trend is Down -> SELL
+        - If Model predicts Drop but RSI is Oversold (<30) -> HOLD (Risk of bounce)
+        - If Model predicts Rise AND Sentiment is Positive -> BUY
         """
 
 # Singleton accessor
