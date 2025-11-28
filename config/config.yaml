@@ -1,0 +1,208 @@
+# Crypto Analysis Agent Configuration
+
+# Application settings
+app:
+  name: "Crypto Market Analysis Agent"
+  version: "1.0.0"
+  debug: false
+  log_level: "INFO"
+
+# Supported cryptocurrencies
+cryptocurrencies:
+  - name: "Bitcoin"
+    id: "bitcoin"
+    symbol: "BTC"
+  - name: "Ethereum"
+    id: "ethereum"
+    symbol: "ETH"
+  - name: "Binance Coin"
+    id: "binancecoin"
+    symbol: "BNB"
+  - name: "Ripple"
+    id: "ripple"
+    symbol: "XRP"
+  - name: "Solana"
+    id: "solana"
+    symbol: "SOL"
+  - name: "Cardano"
+    id: "cardano"
+    symbol: "ADA"
+  - name: "Dogecoin"
+    id: "dogecoin"
+    symbol: "DOGE"
+
+# Data sources
+data_sources:
+  coingecko:
+    base_url: "https://api.coingecko.com/api/v3"
+    timeout: 20
+    rate_limit: 50  # requests per minute
+    
+  rss_feeds:
+    - url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+      name: "CoinDesk"
+    - url: "https://cointelegraph.com/rss"
+      name: "Cointelegraph"
+    - url: "https://news.google.com/rss/search?q=cryptocurrency&hl=en-US&gl=US&ceid=US:en"
+      name: "Google News Crypto"
+    
+  news:
+    max_articles_per_feed: 20
+    max_total_articles: 50
+    cache_duration: 300  # seconds
+
+# Machine Learning Models
+models:
+  lstm:
+    window_size: 30
+    epochs: 20
+    batch_size: 16
+    validation_split: 0.1
+    learning_rate: 0.001
+    layers:
+      - units: 64
+        dropout: 0.15
+      - units: 32
+        dropout: 0.10
+    
+  xgboost:
+    n_estimators: 100
+    max_depth: 5
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    random_state: 42
+    
+  ensemble:
+    lstm_weight: 0.7
+    xgboost_weight: 0.3
+    
+  forecast:
+    default_horizon: 7  # days
+    confidence_level: 0.75
+    monte_carlo_simulations: 50
+
+# Sentiment Analysis
+sentiment:
+  model_name: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+  batch_size: 32
+  max_length: 512
+  device: -1  # -1 for CPU, 0 for GPU
+  cache_dir: "./models/sentiment"
+  
+  thresholds:
+    positive: 0.6
+    negative: 0.4
+
+# LLM Configuration (Gemini)
+llm:
+  provider: "google"
+  model: "gemini-2.0-flash-exp"
+  temperature: 0.3
+  max_output_tokens: 500
+  top_p: 0.9
+  top_k: 40
+  
+  system_prompt: |
+    You are an expert cryptocurrency analyst. Analyze market data and provide 
+    investment insights. Be specific about price levels, timeframes, and actionable 
+    advice. Consider the user's risk tolerance and investment horizon.
+    
+  response_format:
+    include_recommendation: true
+    include_reasoning: true
+    include_risks: true
+    include_catalysts: true
+
+# Technical Indicators
+technical_indicators:
+  rsi:
+    period: 14
+    overbought: 70
+    oversold: 30
+    
+  moving_averages:
+    short: 7
+    medium: 14
+    long: 30
+    
+  volatility:
+    ewma_span: 20
+    
+  momentum:
+    period: 14
+
+# Risk Assessment
+risk_assessment:
+  liquidity:
+    threshold_low: 5.0  # % of market cap
+    threshold_medium: 10.0
+    
+  volatility:
+    threshold_low: 0.02
+    threshold_medium: 0.05
+    threshold_high: 0.10
+    
+  regulatory_keywords:
+    - "sec"
+    - "regulation"
+    - "ban"
+    - "lawsuit"
+    - "enforcement"
+    - "probe"
+
+# UI Configuration
+ui:
+  theme: "dark"
+  layout: "wide"
+  sidebar_state: "expanded"
+  
+  charts:
+    default_height: 400
+    color_scheme:
+      history: "#4e79a7"
+      forecast: "#ff4d4f"
+      lstm: "#f59e0b"
+      xgboost: "#10b981"
+      
+  quick_actions:
+    enabled: true
+    default_queries:
+      - "ETH 7-day forecast"
+      - "Should I buy BTC?"
+      - "SOL sentiment and risks"
+      - "ADA next week outlook"
+
+# Caching
+cache:
+  enabled: true
+  ttl:
+    market_data: 60  # seconds
+    news: 300
+    sentiment: 600
+    models: 3600
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/app.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+# Performance
+performance:
+  max_workers: 4
+  timeout: 30
+  retry_attempts: 3
+  retry_delay: 1
+
+# Feature Flags
+features:
+  enable_lstm: true
+  enable_xgboost: true
+  enable_prophet: false  # Optional: disable if not needed
+  enable_sentiment: true
+  enable_llm_insights: true
+  enable_monte_carlo: true
+  enable_technical_analysis: true
