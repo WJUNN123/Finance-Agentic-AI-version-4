@@ -163,22 +163,39 @@ class GeminiInsightGenerator:
                 [f"- {h}" for h in top_headlines[:5]]
             )
             
-        # Format forecast
-        forecast_text = ""
+        # --- NEW LOGIC START: Calculate Signal and Forecast Text ---
+        model_signal = "NEUTRAL"
+        forecast_details = "No forecast available."
+        
         if forecast_data:
             last_pred = forecast_data.get("last_prediction")
             if last_pred:
                 change_pct = ((last_pred - price) / price) * 100
-                forecast_text = f"\n\n7-day forecast: ${last_pred:,.2f} ({change_pct:+.1f}%)"
                 
-        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
+                # Determine the text signal based on the math
+                if change_pct < -1.5:
+                    model_signal = "BEARISH (Price predicted to DROP)"
+                elif change_pct > 1.5:
+                    model_signal = "BULLISH (Price predicted to RISE)"
+                else:
+                    model_signal = "NEUTRAL / SIDEWAYS"
+                    
+                forecast_details = f"Target Price (7d): ${last_pred:,.2f} ({change_pct:+.2f}%)"
+        # --- NEW LOGIC END ---
+
+        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}).
+
+CRITICAL INSTRUCTION:
+Our proprietary Hybrid LSTM-XGBoost model has generated a specific price forecast. You MUST align your recommendation with the model's forecast direction, regardless of past historical performance.
+- Model Forecast Signal: {model_signal}
+- {forecast_details}
 
 MARKET DATA:
 - Current Price: ${price:,.2f}
 - Market Cap: ${market_cap:,.0f}
 - 24h Volume: ${volume:,.0f}
 - 24h Change: {pct_24h:.2f}%
-- 7d Change: {pct_7d:.2f}%
+- 7d Change: {pct_7d:.2f}% (Note: This is historical data. If the Model Forecast opposes this, trust the Model Forecast.)
 - RSI (14): {rsi:.1f} ({rsi_zone})
 
 SENTIMENT ANALYSIS:
@@ -186,13 +203,13 @@ SENTIMENT ANALYSIS:
 
 ANALYSIS PARAMETERS:
 - Risk Tolerance: {risk_tolerance}
-- Investment Horizon: {horizon_days} days{headlines_text}{forecast_text}
+- Investment Horizon: {horizon_days} days{headlines_text}
 
 Please provide:
-1. A clear BUY/SELL/HOLD recommendation with reasoning
+1. A clear BUY/SELL/HOLD recommendation. (If the Model Forecast is Bearish, do not recommend BUY).
 2. Detailed insights covering:
    - Sentiment analysis interpretation
-   - Technical momentum (24h and 7d trends)
+   - Technical momentum (Compare the historical 7d trend vs the projected Model trend)
    - RSI analysis and what it suggests
    - Risk factors to consider
    - Key catalysts to watch
