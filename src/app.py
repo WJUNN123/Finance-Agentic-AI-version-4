@@ -199,13 +199,6 @@ def analyze_cryptocurrency(
 ) -> Dict:
     """
     Main analysis function that orchestrates all components
-    
-    Args:
-        coin_id: CoinGecko coin ID
-        horizon_days: Forecast horizon in days
-        
-    Returns:
-        Dictionary with all analysis results
     """
     logger.info(f"Starting analysis for {coin_id}, horizon={horizon_days}")
     
@@ -336,13 +329,13 @@ def analyze_cryptocurrency(
                 prediction_data = {
                     'lstm': lstm_preds,
                     'xgboost': xgb_preds,
-                    'ensemble': ensemble_preds # Pass full list for trend analysis
+                    'ensemble': ensemble_preds
                 }
                 
                 # 2. Package Sentiment Data
                 sentiment_data = {
                     'score': sentiment_score,
-                    'breakdown': sentiment_breakdown # Pass full breakdown (pos/neg %)
+                    'breakdown': sentiment_breakdown
                 }
 
                 # 3. Call Generator
@@ -350,9 +343,9 @@ def analyze_cryptocurrency(
                     api_key=API_KEYS['gemini'],
                     coin_symbol=coin_symbol,
                     market_data=market_data,
-                    sentiment_data=sentiment_data,     # NEW: Passing dict
+                    sentiment_data=sentiment_data,      # UPDATED: Passing dict
                     technical_indicators=technical_indicators,
-                    prediction_data=prediction_data,   # NEW: Passing dict
+                    prediction_data=prediction_data,    # UPDATED: Passing dict
                     top_headlines=headlines[:5],
                     horizon_days=horizon_days
                 )
@@ -497,7 +490,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         # Score
         rec_score = insights.get('score', 0)
         if not pd.isna(rec_score):
-            score_100 = max(0, min(100, int(round(50 + 50 * rec_score))))
+            score_100 = max(0, min(100, int(round(rec_score * 100))))
             st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
         
         # Source
@@ -520,12 +513,18 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.markdown(sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Insights text
+        # Insights text - UPDATED LOGIC TO SHOW EVERYTHING
         insight_text = insights.get('insight', '')
-        if insight_text and len(insight_text) > 50:
-            st.info(insight_text)
-        else:
-            st.info(f"**{rec_label}** - Based on current market conditions and sentiment analysis.")
+        
+        if insight_text:
+            if source == 'error':
+                st.error(f"⚠️ {insight_text}")
+            elif source == 'gemini':
+                st.info(insight_text)
+            elif len(insight_text) > 50:
+                st.info(insight_text)
+            else:
+                st.info(f"**{rec_label}** - Based on current market conditions and sentiment analysis.")
     
     with risk_col:
         st.markdown("**⚠️ Risk Factors**")
