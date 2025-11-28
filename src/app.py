@@ -332,14 +332,25 @@ def analyze_cryptocurrency(
         
         if API_KEYS.get('gemini'):
             try:
+                # Prepare data structure for the new prompt
+                prediction_data = {
+                    'lstm': lstm_preds,
+                    'xgboost': xgb_preds,
+                    'ensemble': ensemble_preds # Passing the full list, not just the last value
+                }
+                
+                sentiment_data = {
+                    'score': sentiment_score,
+                    'breakdown': sentiment_breakdown
+                }
+
                 insights = generate_insights(
                     api_key=API_KEYS['gemini'],
-                    coin_id=coin_id,
                     coin_symbol=coin_symbol,
                     market_data=market_data,
-                    sentiment_score=sentiment_score,
+                    sentiment_data=sentiment_data,     # Updated input
                     technical_indicators=technical_indicators,
-                    forecast_data={'last_prediction': ensemble_preds[-1] if ensemble_preds else None},
+                    prediction_data=prediction_data,   # Updated input
                     top_headlines=headlines[:5],
                     horizon_days=horizon_days
                 )
