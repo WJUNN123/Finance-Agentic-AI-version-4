@@ -163,39 +163,22 @@ class GeminiInsightGenerator:
                 [f"- {h}" for h in top_headlines[:5]]
             )
             
-        # --- NEW LOGIC START: Calculate Signal and Forecast Text ---
-        model_signal = "NEUTRAL"
-        forecast_details = "No forecast available."
-        
+        # Format forecast
+        forecast_text = ""
         if forecast_data:
             last_pred = forecast_data.get("last_prediction")
             if last_pred:
                 change_pct = ((last_pred - price) / price) * 100
+                forecast_text = f"\n\n7-day forecast: ${last_pred:,.2f} ({change_pct:+.1f}%)"
                 
-                # Determine the text signal based on the math
-                if change_pct < -1.5:
-                    model_signal = "BEARISH (Price predicted to DROP)"
-                elif change_pct > 1.5:
-                    model_signal = "BULLISH (Price predicted to RISE)"
-                else:
-                    model_signal = "NEUTRAL / SIDEWAYS"
-                    
-                forecast_details = f"Target Price (7d): ${last_pred:,.2f} ({change_pct:+.2f}%)"
-        # --- NEW LOGIC END ---
-
-        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}).
-
-CRITICAL INSTRUCTION:
-Our proprietary Hybrid LSTM-XGBoost model has generated a specific price forecast. You MUST align your recommendation with the model's forecast direction, regardless of past historical performance.
-- Model Forecast Signal: {model_signal}
-- {forecast_details}
+        prompt = f"""You are an expert cryptocurrency analyst. Analyze the following data for {coin_id.upper()} ({coin_symbol.upper()}) and provide investment insights.
 
 MARKET DATA:
 - Current Price: ${price:,.2f}
 - Market Cap: ${market_cap:,.0f}
 - 24h Volume: ${volume:,.0f}
 - 24h Change: {pct_24h:.2f}%
-- 7d Change: {pct_7d:.2f}% (Note: This is historical data. If the Model Forecast opposes this, trust the Model Forecast.)
+- 7d Change: {pct_7d:.2f}%
 - RSI (14): {rsi:.1f} ({rsi_zone})
 
 SENTIMENT ANALYSIS:
@@ -203,51 +186,32 @@ SENTIMENT ANALYSIS:
 
 ANALYSIS PARAMETERS:
 - Risk Tolerance: {risk_tolerance}
-- Investment Horizon: {horizon_days} days{headlines_text}
+- Investment Horizon: {horizon_days} days{headlines_text}{forecast_text}
 
 Please provide:
-1. A clear BUY/SELL/HOLD recommendation, formatted as "Recommendation: [WORD]". The word MUST be one of: BUY, SELL, or HOLD. (If the Model Forecast is Bearish, you MUST recommend SELL or HOLD).
+1. A clear BUY/SELL/HOLD recommendation with reasoning
 2. Detailed insights covering:
-    - Sentiment analysis interpretation
-    - Technical momentum (Compare the historical 7d trend vs the projected Model trend)
-    - RSI analysis and what it suggests
-    - Risk factors to consider
-    - Key catalysts to watch
+   - Sentiment analysis interpretation
+   - Technical momentum (24h and 7d trends)
+   - RSI analysis and what it suggests
+   - Risk factors to consider
+   - Key catalysts to watch
 
 Format your response as a structured analysis. Be specific about price levels, timeframes, and actionable advice. Consider the user's risk tolerance and investment horizon.
 
 Keep the tone professional but accessible. Include appropriate disclaimers that this is educational content, not financial advice."""
 
         return prompt
-            
+        
     def _extract_recommendation(self, insight_text: str) -> str:
-        """
-        Extract BUY/SELL/HOLD recommendation from insight text.
-        Returns a single, standardized word (BUY, SELL, or HOLD).
-        """
+        """Extract BUY/SELL/HOLD recommendation from insight text"""
         text_lower = insight_text.lower()
         
-        # 1. Try to extract the explicit recommendation using regex (as prompted)
-        # Looks for "Recommendation: SELL" or similar within the first 300 characters
-        match = re.search(r"recommendation:\s*(buy|sell|hold|avoid|wait)", text_lower[:300], re.IGNORECASE)
-        if match:
-            rec = match.group(1).upper()
-            if rec in ["BUY"]:
-                return "BUY"
-            elif rec in ["SELL", "AVOID"]:
-                # Normalizes "SELL", "AVOID" to "SELL"
-                return "SELL"
-            elif rec in ["HOLD", "WAIT"]:
-                # Normalizes "HOLD", "WAIT" to "HOLD"
-                return "HOLD"
-
-        # 2. Fallback to keyword search (using simplified returns)
-        
-        # Sell signals (prioritized)
+        # Strong buy signals
         if any(phrase in text_lower for phrase in [
-            "sell", "short", "avoid", "exit", "close position"
+            "strong buy", "buy recommendation", "recommend buying"
         ]):
-            return "SELL"
+            return "BUY"
             
         # Buy signals
         if any(phrase in text_lower for phrase in [
@@ -256,14 +220,20 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             if "avoid" not in text_lower and "don't" not in text_lower:
                 return "BUY"
                 
+        # Sell signals
+        if any(phrase in text_lower for phrase in [
+            "sell", "short", "avoid", "exit", "close position"
+        ]):
+            return "SELL / AVOID"
+            
         # Hold signals
         if any(phrase in text_lower for phrase in [
             "hold", "wait", "neutral", "sideways", "consolidat"
         ]):
-            return "HOLD"
+            return "HOLD / WAIT"
             
         # Default to hold
-        return "HOLD"
+        return "HOLD / WAIT"
         
     def _calculate_score(
         self,
@@ -273,20 +243,12 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
     ) -> float:
         """Calculate confidence score for recommendation"""
         
-        # This function relies on technical indicators, which are not directly corrected here,
-        # but the core logic for the score remains intact.
-        
         text_lower = insight_text.lower()
         
         # Start with sentiment
         score = 0.4 * sentiment_score
         
         # Add technical momentum
-        # NOTE: The technical indicators used here (pct_24h, pct_7d) are historical, 
-        # so they may still bias the score away from the model's forecast.
-        # This is okay if you want the score to reflect the *total* data weight,
-        # including strong historical performance.
-        
         pct_24h = technical_indicators.get("pct_24h", 0)
         pct_7d = technical_indicators.get("pct_7d", 0)
         
@@ -346,15 +308,15 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
         pct_7d = technical_indicators.get("pct_7d", 0)
         rsi = technical_indicators.get("rsi", 50)
         
-        # Determine recommendation (NOTE: Fallback uses simple rules)
+        # Determine recommendation
         if sentiment_score > 0.3 and pct_7d > 5 and rsi < 70:
             recommendation = "BUY"
             score = 0.6
         elif sentiment_score < -0.3 or rsi > 75:
-            recommendation = "SELL" # Simplified from "SELL / AVOID"
+            recommendation = "SELL / AVOID"
             score = -0.5
         else:
-            recommendation = "HOLD" # Simplified from "HOLD / WAIT"
+            recommendation = "HOLD / WAIT"
             score = 0.0
             
         insight = f"""**Recommendation: {recommendation}**
@@ -376,4 +338,29 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
             "score": score,
             "insight": insight,
             "source": "fallback"
+        }
+
+
+# Convenience function
+def generate_insights(api_key: str, **kwargs) -> Dict:
+    """
+    Generate insights with automatic error handling
+    
+    Args:
+        api_key: Gemini API key
+        **kwargs: Arguments for generate_insights method
+        
+    Returns:
+        Insights dictionary
+    """
+    try:
+        generator = GeminiInsightGenerator(api_key=api_key)
+        return generator.generate_insights(**kwargs)
+    except Exception as e:
+        logger.error(f"Failed to generate insights: {e}")
+        return {
+            "recommendation": "HOLD / WAIT",
+            "score": 0.0,
+            "insight": "Unable to generate insights. Please try again later.",
+            "source": "error"
         }
