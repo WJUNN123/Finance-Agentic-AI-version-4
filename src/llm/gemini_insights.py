@@ -203,35 +203,33 @@ Keep the tone professional but accessible. Include appropriate disclaimers that 
 
         return prompt
         
-    def _extract_recommendation(self, text):
-        t = text.lower()
+    def extract_recommendation(text: str) -> str:
+        """
+        Extract only the explicit recommendation line coming from Gemini.
+        Ignores all other occurrences of the words buy/sell/avoid/etc.
+        """
     
-        # Priority 1 – explicit structured output (best case)
-        if "recommendation:" in t:
-            if "buy" in t:
-                return "BUY"
-            if "sell" in t or "avoid" in t:
-                return "SELL / AVOID"
-            if "hold" in t or "wait" in t:
-                return "HOLD / WAIT"
+        import re
+        lines = text.splitlines()
     
-        # Count keywords — avoids false triggers
-        buy_score = t.count("buy") + t.count("accumulate")
-        sell_score = t.count("sell") + t.count("avoid") + t.count("exit")
-        hold_score = t.count("hold") + t.count("neutral") + t.count("wait")
+        # Look for exact recommendation statement
+        for line in lines:
+            m = re.search(r"recommendation[:\-]\s*(.*)", line, re.I)
+            if m:
+                rec = m.group(1).strip().lower()
+                # Normalize
+                if rec.startswith("buy"):
+                    return "BUY"
+                if rec.startswith("sell"):
+                    return "SELL"
+                if rec.startswith("avoid"):
+                    return "AVOID"
+                if rec.startswith("hold"):
+                    return "HOLD"
+                return rec.upper()
     
-        # Adjust for negations (fixes “not recommended to sell”)
-        if "not sell" in t or "avoid selling" in t or "selling not recommended" in t:
-            sell_score -= 2
-    
-        # Choose the highest score
-        scores = {
-            "BUY": buy_score,
-            "SELL / AVOID": sell_score,
-            "HOLD / WAIT": hold_score
-        }
-    
-        return max(scores, key=scores.get)
+        # If not found, safe fallback
+        return "HOLD"
         
     def _calculate_score(
         self,
