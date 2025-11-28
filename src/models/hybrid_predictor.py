@@ -94,7 +94,7 @@ class HybridPredictor:
         df['price_range'] = df['price'].rolling(7, min_periods=1).max() - \
                            df['price'].rolling(7, min_periods=1).min()
         
-        return df.fillna(method='bfill').fillna(0)
+        return df.bfill().fillna(0)
         
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
         """Calculate RSI indicator"""
