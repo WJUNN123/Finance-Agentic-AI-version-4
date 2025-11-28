@@ -699,7 +699,7 @@ def main():
         key="user_input"
     )
     
-    analyze_button = st.button("🔍 Analyze", type="primary", use_container_width=True)
+    analyze_button = st.button("🔍 Analyze", type="primary", help="Click to start analysis")
     
     # Process query
     if analyze_button and user_message.strip():
