@@ -1,5 +1,5 @@
 """
-Gemini LLM Integration (JSON Mode)
+Gemini LLM Integration (Robust JSON Mode)
 Generates AI-powered investment insights using Google's Gemini 2.0 Flash
 """
 
@@ -15,7 +15,7 @@ class GeminiInsightGenerator:
         self,
         api_key: str,
         model_name: str = "gemini-2.0-flash",
-        temperature: float = 0.1,  # Lowered to 0.1 for maximum consistency
+        temperature: float = 0.1,
         max_tokens: int = 1000
     ):
         self.model_name = model_name
@@ -62,15 +62,27 @@ class GeminiInsightGenerator:
             
             response = self.model.generate_content(prompt, generation_config=config)
             
-            # Parse JSON directly - no more regex guessing
-            result = json.loads(response.text)
+            # Robust JSON Parsing
+            try:
+                result = json.loads(response.text)
+            except json.JSONDecodeError:
+                # Handle cases where model wraps JSON in markdown code blocks
+                clean_text = response.text.replace('```json', '').replace('```', '').strip()
+                result = json.loads(clean_text)
             
+            # Safe Extraction (prevents KeyErrors)
+            synthesis = result.get('analysis_synthesis', 'Detailed synthesis unavailable for this request.')
+            risks = result.get('key_risks', ['General Market Risk'])
+            score = result.get('confidence_score', 50)
+            rec_raw = result.get('recommendation', 'HOLD')
+
             # Format the output for the UI
+            risk_list = "\n".join([f"- {r}" for r in risks])
             formatted_insight = (
-                f"**Analysis Synthesis**\n{result['analysis_synthesis']}\n\n"
-                f"**Key Risks**\n" + "\n".join([f"- {r}" for r in result['key_risks']]) + "\n\n"
-                f"**Confidence Score**\n{result['confidence_score']}\n\n"
-                f"**Recommendation**\n{result['recommendation']}"
+                f"**Analysis Synthesis**\n{synthesis}\n\n"
+                f"**Key Risks**\n{risk_list}\n\n"
+                f"**Confidence Score**\n{score}\n\n"
+                f"**Recommendation**\n{rec_raw}"
             )
 
             # Map simpler labels to UI colors
@@ -81,8 +93,8 @@ class GeminiInsightGenerator:
             }
 
             return {
-                "recommendation": rec_map.get(result['recommendation'], "HOLD / WAIT"),
-                "score": result['confidence_score'] / 100.0,
+                "recommendation": rec_map.get(rec_raw, "HOLD / WAIT"),
+                "score": score / 100.0,
                 "insight": formatted_insight,
                 "source": "gemini",
                 "model": self.model_name
@@ -93,15 +105,11 @@ class GeminiInsightGenerator:
             return {
                 "recommendation": "HOLD / WAIT",
                 "score": 0.0,
-                "insight": f"Error parsing AI response: {str(e)}",
+                "insight": f"AI Generation Error: {str(e)}",
                 "source": "error"
             }
 
     def _build_prompt(self, coin_symbol, market_data, sentiment_data, tech, preds, headlines, horizon):
-        # ... (Keep the exact same logic as before for extracting ROI, RSI, etc.) ...
-        # [Copy the logic from the previous turn's _build_prompt here]
-        # I will condense it here for brevity, but you should copy the 'logic' part from the previous file.
-        
         curr_price = market_data.get('price_usd', 0)
         
         # Calculate ROI
