@@ -25,7 +25,7 @@ from data_fetchers.news import get_fetcher as get_news_fetcher
 from sentiment.analyzer import get_analyzer
 from models.hybrid_predictor import train_and_predict
 from llm.gemini_insights import generate_insights
-from from .technical_indicators import get_all_indicators
+from .technical_indicators import get_all_indicators
 
 # Configure logging
 logging.basicConfig(
