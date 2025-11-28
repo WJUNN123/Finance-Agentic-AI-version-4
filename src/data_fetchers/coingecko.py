@@ -38,61 +38,61 @@ class CoinGeckoFetcher:
         self.last_request_time = time.time()
         
     def get_market_data(self, coin_ids: List[str], max_retries: int = 3) -> pd.DataFrame:
-    """Fetch market data with retry logic and exponential backoff"""
-    
-    for attempt in range(max_retries):
-        self._rate_limit()
+        """Fetch market data with retry logic and exponential backoff"""
         
-        url = f"{self.base_url}/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "ids": ",".join(coin_ids),
-            "order": "market_cap_desc",
-            "per_page": max(1, len(coin_ids)),
-            "page": 1,
-            "sparkline": "false",
-            "price_change_percentage": "1h,24h,7d",
-        }
+        for attempt in range(max_retries):
+            self._rate_limit()
+            
+            url = f"{self.base_url}/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "ids": ",".join(coin_ids),
+                "order": "market_cap_desc",
+                "per_page": max(1, len(coin_ids)),
+                "page": 1,
+                "sparkline": "false",
+                "price_change_percentage": "1h,24h,7d",
+            }
+            
+            try:
+                logger.info(f"Fetching market data for: {', '.join(coin_ids)} (attempt {attempt + 1})")
+                response = requests.get(url, params=params, timeout=self.timeout)
+                
+                # Handle 429 specifically
+                if response.status_code == 429:
+                    wait_time = (2 ** attempt) * 10  # 10s, 20s, 40s
+                    logger.warning(f"⚠️ Rate limited. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    logger.warning(f"No data returned for: {coin_ids}")
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(data)
+                logger.info(f"✅ Successfully fetched data for {len(df)} coins")
+                return df
+                
+            except requests.exceptions.HTTPError as e:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 10
+                    logger.warning(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"❌ Failed after {max_retries} attempts: {e}")
+                raise
+                
+            except Exception as e:
+                logger.error(f"❌ Unexpected error: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+                raise
         
-        try:
-            logger.info(f"Fetching market data for: {', '.join(coin_ids)} (attempt {attempt + 1})")
-            response = requests.get(url, params=params, timeout=self.timeout)
-            
-            # Handle 429 specifically
-            if response.status_code == 429:
-                wait_time = (2 ** attempt) * 10  # 10s, 20s, 40s
-                logger.warning(f"⚠️ Rate limited. Waiting {wait_time}s...")
-                time.sleep(wait_time)
-                continue
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data:
-                logger.warning(f"No data returned for: {coin_ids}")
-                return pd.DataFrame()
-            
-            df = pd.DataFrame(data)
-            logger.info(f"✅ Successfully fetched data for {len(df)} coins")
-            return df
-            
-        except requests.exceptions.HTTPError as e:
-            if attempt < max_retries - 1:
-                wait_time = (2 ** attempt) * 10
-                logger.warning(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                time.sleep(wait_time)
-                continue
-            logger.error(f"❌ Failed after {max_retries} attempts: {e}")
-            raise
-            
-        except Exception as e:
-            logger.error(f"❌ Unexpected error: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(5)
-                continue
-            raise
-    
-    return pd.DataFrame()
+        return pd.DataFrame()
             
     def get_historical_data(self, coin_id: str, days: int = 180) -> pd.DataFrame:
         """
