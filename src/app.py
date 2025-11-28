@@ -144,12 +144,17 @@ def sentiment_bar(pos: float, neu: float, neg: float, width: int = 20) -> str:
     return "🟩" * pos_blocks + "⬜" * neu_blocks + "🟥" * neg_blocks
 
 def get_recommendation_style(rating: str) -> Tuple[str, str, str]:
-    """Get styling for recommendation"""
-    rating_lower = (rating or "").lower()
-    if "buy" in rating_lower:
+    rating_lower = (rating or "").lower().strip()
+
+    # direct match for buy
+    if rating_lower.startswith("buy"):
         return ("BUY", "🟢", "#16a34a")
-    elif "sell" in rating_lower or "avoid" in rating_lower:
+
+    # match ONLY when recommendation begins with sell/avoid
+    elif rating_lower.startswith("sell") or rating_lower.startswith("avoid"):
         return ("SELL / AVOID", "🔴", "#ef4444")
+
+    # default
     else:
         return ("HOLD / WAIT", "🟡", "#f59e0b")
 
