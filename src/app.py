@@ -332,25 +332,27 @@ def analyze_cryptocurrency(
         
         if API_KEYS.get('gemini'):
             try:
-                # Prepare data structure for the new prompt
+                # 1. Package Prediction Data
                 prediction_data = {
                     'lstm': lstm_preds,
                     'xgboost': xgb_preds,
-                    'ensemble': ensemble_preds # Passing the full list, not just the last value
+                    'ensemble': ensemble_preds # Pass full list for trend analysis
                 }
                 
+                # 2. Package Sentiment Data
                 sentiment_data = {
                     'score': sentiment_score,
-                    'breakdown': sentiment_breakdown
+                    'breakdown': sentiment_breakdown # Pass full breakdown (pos/neg %)
                 }
 
+                # 3. Call Generator
                 insights = generate_insights(
                     api_key=API_KEYS['gemini'],
                     coin_symbol=coin_symbol,
                     market_data=market_data,
-                    sentiment_data=sentiment_data,     # Updated input
+                    sentiment_data=sentiment_data,     # NEW: Passing dict
                     technical_indicators=technical_indicators,
-                    prediction_data=prediction_data,   # Updated input
+                    prediction_data=prediction_data,   # NEW: Passing dict
                     top_headlines=headlines[:5],
                     horizon_days=horizon_days
                 )
@@ -363,6 +365,7 @@ def analyze_cryptocurrency(
                     'source': 'error'
                 }
         else:
+            # Keep existing fallback logic
             insights = {
                 'recommendation': 'HOLD / WAIT',
                 'score': 0.0,
