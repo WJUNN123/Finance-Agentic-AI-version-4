@@ -43,94 +43,124 @@ class GeminiInsightGenerator:
             raise
             
     def generate_insights(
-        self,
-        coin_id: str,
-        coin_symbol: str,
-        market_data: Dict,
+        llm,
+        symbol: str,
+        price: float,
+        change_24h: float,
+        change_7d: float,
+        rsi: float,
+        liquidity: float,
+        volatility: float,
+        trend: str,
         sentiment_score: float,
-        technical_indicators: Dict,
-        forecast_data: Optional[Dict] = None,
-        top_headlines: Optional[List[str]] = None,
-        risk_tolerance: str = "medium",
-        horizon_days: int = 7
-    ) -> Dict:
+        sentiment_pos: float,
+        sentiment_neu: float,
+        sentiment_neg: float,
+        headlines: list,
+        prediction_pct: float,
+        predicted_price: float,
+        confidence: int
+    ):
         """
-        Generate comprehensive investment insights
-        
-        Args:
-            coin_id: Cryptocurrency ID
-            coin_symbol: Cryptocurrency symbol
-            market_data: Current market data
-            sentiment_score: Aggregated sentiment score (-1 to +1)
-            technical_indicators: RSI, momentum, etc.
-            forecast_data: Price forecast information
-            top_headlines: Recent news headlines
-            risk_tolerance: User's risk tolerance (low/medium/high)
-            horizon_days: Investment time horizon
-            
-        Returns:
-            Dictionary with recommendation, score, insight text, and metadata
+        Generate insights using LLM with fallback rule-based logic.
         """
-        # Build comprehensive prompt
-        prompt = self._build_prompt(
-            coin_id=coin_id,
-            coin_symbol=coin_symbol,
-            market_data=market_data,
-            sentiment_score=sentiment_score,
-            technical_indicators=technical_indicators,
-            forecast_data=forecast_data,
-            top_headlines=top_headlines,
-            risk_tolerance=risk_tolerance,
-            horizon_days=horizon_days
-        )
-        
+    
+        # Convert headlines list into a readable string
+        headline_text = "\n".join([f"- {h}" for h in headlines])
+    
+        llm_prompt = f"""
+    You are a senior financial analyst specializing in cryptocurrency markets.
+    You MUST return a JSON object following the exact required format.
+    
+    ### INPUT DATA
+    Symbol: {symbol}
+    Current Price: {price}
+    24h Change: {change_24h}%
+    7d Change: {change_7d}%
+    RSI(14): {rsi}
+    Liquidity Score: {liquidity}
+    Volatility Score: {volatility}
+    Trend Direction: {trend}
+    AI Confidence Score: {confidence}
+    
+    ### SENTIMENT DATA
+    Overall Sentiment Score: {sentiment_score}
+    Positive News: {sentiment_pos}%
+    Neutral News: {sentiment_neu}%
+    Negative News: {sentiment_neg}%
+    
+    ### HEADLINES
+    {headline_text}
+    
+    ### PRICE FORECAST
+    7-Day Forecast % Change: {prediction_pct}%
+    Expected Price in 7 Days: {predicted_price}
+    
+    ### TASK
+    Based on ALL data above:
+    1. Give BUY / SELL / HOLD recommendation
+    2. Justify using sentiment + forecast + RSI + trend
+    3. Provide a short insight (3–5 sentences)
+    4. List major risks
+    Return ONLY valid JSON.
+    
+    ### OUTPUT FORMAT (STRICT)
+    {{
+      "recommendation": "",
+      "insight": "",
+      "reasoning": "",
+      "risk_factors": ""
+    }}
+    """
+    
         try:
-            logger.info(f"Generating insights for {coin_symbol}...")
-            
-            # Configure generation
-            generation_config = genai.types.GenerationConfig(
-                temperature=self.temperature,
-                max_output_tokens=self.max_tokens,
-                top_p=0.9,
-                top_k=40
-            )
-            
-            # Generate response
-            response = self.model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-            
-            insight_text = response.text.strip()
-            
-            # Extract recommendation
-            recommendation = self._extract_recommendation(insight_text)
-            
-            # Calculate confidence score
-            score = self._calculate_score(
-                insight_text=insight_text,
-                sentiment_score=sentiment_score,
-                technical_indicators=technical_indicators
-            )
-            
-            logger.info(f"Generated insights successfully. Recommendation: {recommendation}")
-            
+            response = llm.generate(llm_prompt)
+    
+            # Try to load JSON result
+            import json
+            result = json.loads(response)
+    
             return {
-                "recommendation": recommendation,
-                "score": score,
-                "insight": insight_text,
-                "source": "gemini",
-                "model": self.model_name
+                "source": "llm",
+                "recommendation": result.get("recommendation", "HOLD"),
+                "insight": result.get("insight", ""),
+                "reasoning": result.get("reasoning", ""),
+                "risk_factors": result.get("risk_factors", "")
             }
-            
+    
         except Exception as e:
-            logger.error(f"Error generating insights: {e}")
-            # Return fallback
-            return self._generate_fallback_insight(
+            print("⚠️ LLM failed, using rule-based fallback:", e)
+            return rule_based_fallback(
+                symbol=symbol,
+                change_24h=change_24h,
+                change_7d=change_7d,
+                rsi=rsi,
                 sentiment_score=sentiment_score,
-                technical_indicators=technical_indicators
+                prediction_pct=prediction_pct
             )
-            
+
+    def rule_based_fallback(symbol, change_24h, change_7d, rsi, sentiment_score, prediction_pct):
+        # Trend logic
+        trend = "uptrend" if change_7d > 0 else "downtrend"
+    
+        # Basic rules
+        if prediction_pct > 5 and sentiment_score > 0:
+            rec = "BUY"
+        elif prediction_pct < -5 or sentiment_score < -0.1:
+            rec = "SELL / AVOID"
+        else:
+            rec = "HOLD / WAIT"
+    
+        insight = f"{symbol} has a {trend} with mixed signals. Forecast suggests {prediction_pct:.2f}% change, and sentiment score is {sentiment_score}."
+    
+        return {
+            "source": "rules",
+            "recommendation": rec,
+            "insight": insight,
+            "reasoning": "Automatic rule-based model used due to LLM failure.",
+            "risk_factors": "High volatility, sentiment uncertainty."
+        }
+        
     def _build_prompt(
         self,
         coin_id: str,
