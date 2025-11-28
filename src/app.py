@@ -458,6 +458,54 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.caption(f"Trend: {technical.get('trend', 'N/A').title()}")
     
     st.divider()
+
+    # ========================================================================
+    # SENTIMENT ANALYSIS
+    # ========================================================================
+    st.markdown("### News Sentiment Analysis 📰")
+
+    # Extract percentages for the sentiment bar
+    pos_pct = sentiment_breakdown.get('positive', 0)
+    neu_pct = sentiment_breakdown.get('neutral', 0)
+    neg_pct = sentiment_breakdown.get('negative', 0)
+
+    # Render the visual bar
+    bar_html = sentiment_bar(pos_pct, neu_pct, neg_pct)
+    st.markdown(
+        f"<div style='font-size: 1.5rem; line-height: 1.5;'>{bar_html}</div>",
+        unsafe_allow_html=True
+    )
+
+    # Render the metrics
+    sentiment_cols = st.columns(3)
+    with sentiment_cols[0]:
+        st.caption(f"**Positive**: {pos_pct:.1f}%")
+    with sentiment_cols[1]:
+        st.caption(f"**Neutral**: {neu_pct:.1f}%")
+    with sentiment_cols[2]:
+        st.caption(f"**Negative**: {neg_pct:.1f}%")
+
+    st.markdown(f"**Aggregate Score**: **{insights['score']:.2f}** (Range: -1.0 to +1.0)")
+    st.divider()
+
+    # ========================================================================
+    # GEMINI AI INSIGHT & FORECAST
+    # ========================================================================
+    st.markdown(f"### Gemini AI Insight 🧠 ({horizon_days}-Day Outlook)")
+
+    # Display the full insight text from the LLM
+    st.markdown(insights['insight'])
+    
+    st.divider()
+
+    # ========================================================================
+    # PRICE FORECAST CHART
+    # ========================================================================
+    st.markdown(f"### Price Forecast & Technicals 📈")
+
+    # Render the forecast chart (requires a separate helper function)
+    # The 'rec_color' is used here to match the chart line to the recommendation.
+    render_price_forecast(result, horizon_days, rec_color)
     
     # ========================================================================
     # INSIGHTS AND RISK SECTION
