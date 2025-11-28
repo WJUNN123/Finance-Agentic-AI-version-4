@@ -82,14 +82,12 @@ def get_api_keys() -> dict:
     """Get API keys from Streamlit secrets or environment variables"""
     keys = {}
     
-    # Try Streamlit secrets first
     try:
         keys['gemini'] = st.secrets.get('gemini', {}).get('api_key')
         keys['hf_token'] = st.secrets.get('huggingface', {}).get('token')
     except Exception:
         pass
     
-    # Fallback to environment variables
     if not keys.get('gemini'):
         keys['gemini'] = os.getenv('GEMINI_API_KEY')
     if not keys.get('hf_token'):
@@ -146,15 +144,10 @@ def sentiment_bar(pos: float, neu: float, neg: float, width: int = 20) -> str:
 def get_recommendation_style(rating: str) -> Tuple[str, str, str]:
     rating_lower = (rating or "").lower().strip()
 
-    # direct match for buy
     if rating_lower.startswith("buy"):
         return ("BUY", "🟢", "#16a34a")
-
-    # match ONLY when recommendation begins with sell/avoid
     elif rating_lower.startswith("sell") or rating_lower.startswith("avoid"):
         return ("SELL / AVOID", "🔴", "#ef4444")
-
-    # default
     else:
         return ("HOLD / WAIT", "🟡", "#f59e0b")
 
@@ -163,7 +156,6 @@ def parse_user_message(message: str) -> Dict:
     import re
     msg_lower = message.lower()
     
-    # Extract coin
     coin_id = None
     for name, cid in COIN_NAME_TO_ID.items():
         if name in msg_lower:
@@ -175,10 +167,9 @@ def parse_user_message(message: str) -> Dict:
                 coin_id = cid
                 break
     if not coin_id:
-        coin_id = "bitcoin"  # Default
+        coin_id = "bitcoin"
     
-    # Extract horizon
-    horizon_days = 7  # Default
+    horizon_days = 7
     m = re.search(r'(\d+)\s*(day|days|d)\b', msg_lower)
     if m:
         horizon_days = int(m.group(1))
@@ -193,13 +184,8 @@ def parse_user_message(message: str) -> Dict:
 # ============================================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def analyze_cryptocurrency(
-    coin_id: str,
-    horizon_days: int = 7
-) -> Dict:
-    """
-    Main analysis function that orchestrates all components
-    """
+def analyze_cryptocurrency(coin_id: str, horizon_days: int = 7) -> Dict:
+    """Main analysis function"""
     logger.info(f"Starting analysis for {coin_id}, horizon={horizon_days}")
     
     # Get coin info
@@ -209,16 +195,14 @@ def analyze_cryptocurrency(
     
     coin_symbol = coin_info['symbol']
     
-    # ====================================================================
     # 1. FETCH MARKET DATA
-    # ====================================================================
     logger.info("Fetching market data...")
     cg_fetcher = get_cg_fetcher()
     
     market_df = cg_fetcher.get_market_data([coin_id])
-    
     if market_df.empty:
-        raise RuntimeError(f"CoinGecko returned no data for {coin_id}. API might be rate-limited. Try clearing cache (Press 'C').")
+        # Raise error to prevent caching bad result
+        raise RuntimeError(f"CoinGecko returned no data for {coin_id}. API rate limit likely.")
     
     market_row = market_df.iloc[0]
     market_data = {
@@ -238,9 +222,7 @@ def analyze_cryptocurrency(
     
     price_series = historical_df['price']
     
-    # ====================================================================
-    # 2. CALCULATE TECHNICAL INDICATORS
-    # ====================================================================
+    # 2. TECHNICAL INDICATORS
     logger.info("Calculating technical indicators...")
     technical_indicators = get_all_indicators(
         price_series,
@@ -249,65 +231,45 @@ def analyze_cryptocurrency(
     )
     market_data['rsi_14'] = technical_indicators['rsi']
     
-    # ====================================================================
-    # 3. FETCH AND ANALYZE NEWS
-    # ====================================================================
+    # 3. NEWS
     logger.info("Fetching news articles...")
     news_fetcher = get_news_fetcher()
-    
-    # Fetch articles for both symbol and name
     articles_symbol = news_fetcher.fetch_articles(coin_symbol, max_total=25)
     articles_name = news_fetcher.fetch_articles(coin_id, max_total=25)
-    
-    # Merge and deduplicate
     all_articles = {a['title']: a for a in (articles_symbol + articles_name)}
     articles = list(all_articles.values())[:50]
-    
-    # Extract headlines
     headlines = [a['title'] for a in articles if a.get('title')]
     
-    # ====================================================================
-    # 4. SENTIMENT ANALYSIS
-    # ====================================================================
+    # 4. SENTIMENT
     logger.info("Analyzing sentiment...")
     sentiment_analyzer = get_analyzer()
-    
     if headlines:
         sentiment_results = sentiment_analyzer.analyze_texts(headlines)
-        sentiment_score, sentiment_df = sentiment_analyzer.calculate_aggregate_sentiment(
-            sentiment_results
-        )
+        sentiment_score, sentiment_df = sentiment_analyzer.calculate_aggregate_sentiment(sentiment_results)
         sentiment_breakdown = sentiment_analyzer.get_sentiment_breakdown(sentiment_results)
     else:
         sentiment_score = 0.0
         sentiment_df = pd.DataFrame()
         sentiment_breakdown = {'positive': 0.0, 'neutral': 0.0, 'negative': 0.0}
     
-    # ====================================================================
-    # 5. PRICE PREDICTION
-    # ====================================================================
-    logger.info("Training models and generating forecast...")
-    
+    # 5. PREDICTION
+    logger.info("Training models...")
     try:
         predictions = train_and_predict(
             price_series,
             horizon=horizon_days,
             window_size=CONFIG['models']['lstm']['window_size']
         )
-        
         lstm_preds = predictions['lstm']
         xgb_preds = predictions['xgboost']
         ensemble_preds = predictions['ensemble']
     except Exception as e:
         logger.error(f"Prediction error: {e}")
-        lstm_preds = []
-        xgb_preds = []
-        ensemble_preds = []
+        lstm_preds, xgb_preds, ensemble_preds = [], [], []
     
     # Build forecast table
     forecast_table = []
     last_date = historical_df.index[-1]
-    
     for i in range(horizon_days):
         forecast_date = last_date + pd.Timedelta(days=i+1)
         forecast_table.append({
@@ -318,27 +280,19 @@ def analyze_cryptocurrency(
             'ensemble': ensemble_preds[i] if i < len(ensemble_preds) else None
         })
     
-    # ====================================================================
-    # 6. GENERATE AI INSIGHTS (GEMINI)
-    # ====================================================================
+    # 6. AI INSIGHTS
     logger.info("Generating AI insights...")
-    
     if API_KEYS.get('gemini'):
         try:
-            # 1. Package Prediction Data
             prediction_data = {
                 'lstm': lstm_preds,
                 'xgboost': xgb_preds,
                 'ensemble': ensemble_preds
             }
-            
-            # 2. Package Sentiment Data
             sentiment_data = {
                 'score': sentiment_score,
                 'breakdown': sentiment_breakdown
             }
-
-            # 3. Call Generator
             insights = generate_insights(
                 api_key=API_KEYS['gemini'],
                 coin_symbol=coin_symbol,
@@ -351,24 +305,9 @@ def analyze_cryptocurrency(
             )
         except Exception as e:
             logger.error(f"Gemini insights error: {e}")
-            insights = {
-                'recommendation': 'HOLD / WAIT',
-                'score': 0.0,
-                'insight': f'Error generating insights: {str(e)}',
-                'source': 'error'
-            }
+            insights = {'recommendation': 'HOLD', 'score': 0.0, 'insight': f'Error: {str(e)}', 'source': 'error'}
     else:
-        insights = {
-            'recommendation': 'HOLD / WAIT',
-            'score': 0.0,
-            'insight': 'Gemini API key not configured. Please add your API key to enable AI-powered insights.',
-            'source': 'no_api_key'
-        }
-    
-    # ====================================================================
-    # 7. COMPILE RESULTS
-    # ====================================================================
-    logger.info("Analysis complete!")
+        insights = {'recommendation': 'HOLD', 'score': 0.0, 'insight': 'No API Key', 'source': 'no_api_key'}
     
     return {
         'market': market_data,
@@ -378,296 +317,153 @@ def analyze_cryptocurrency(
         'headlines': headlines,
         'sentiment_score': sentiment_score,
         'sentiment_breakdown': sentiment_breakdown,
-        'sentiment_details': sentiment_df,
         'forecast_table': forecast_table,
-        'predictions': {
-            'lstm': lstm_preds,
-            'xgboost': xgb_preds,
-            'ensemble': ensemble_preds
-        },
         'insights': insights,
         'coin_info': coin_info
     }
 
 # ============================================================================
-# UI RENDERING FUNCTIONS
+# UI RENDERING
 # ============================================================================
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
-    """Render the main summary dashboard with all insights"""
-    
+    """Render the main summary dashboard"""
     market = result['market']
     technical = result['technical']
     sentiment_breakdown = result['sentiment_breakdown']
     insights = result['insights']
-    
-    # Extract data
     coin_name = result['coin_info']['name']
-    symbol = market['symbol']
-    price = market['price_usd']
-    pct_24h = market['pct_change_24h']
-    pct_7d = market['pct_change_7d']
-    market_cap = market['market_cap']
-    volume = market['volume_24h']
-    rsi = technical['rsi']
     
-    # Recommendation styling
-    rec_text = insights['recommendation']
+    rec_text = insights.get('recommendation', 'HOLD')
     rec_label, rec_emoji, rec_color = get_recommendation_style(rec_text)
     
-    # ========================================================================
-    # HEADER SECTION
-    # ========================================================================
-    st.markdown(f"### 📊 {coin_name} ({symbol})")
+    st.markdown(f"### 📊 {coin_name} ({market['symbol']})")
     
     cols = st.columns([1.5, 1.2, 1.2, 1.2])
-    
-    # Price column
     with cols[0]:
         st.markdown("**Price**")
-        st.markdown(
-            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
-            unsafe_allow_html=True
-        )
-        
-        if not pd.isna(pct_24h):
-            arrow = "🔺" if pct_24h >= 0 else "🔻"
-            color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
-            st.markdown(
-                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
-                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
-                unsafe_allow_html=True
-            )
-        
-        # Recommendation badge
-        st.markdown(
-            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
-            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
-            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<span style='font-size:2rem;font-weight:800'>${market['price_usd']:,.2f}</span>", unsafe_allow_html=True)
+        st.markdown(f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;border-radius:12px;background:{rec_color}22;color:{rec_color};font-weight:800'>{rec_emoji} {rec_label}</span>", unsafe_allow_html=True)
     
-    # Market metrics
     with cols[1]:
-        st.metric("Market Cap", format_money(market_cap))
-        st.metric("24h Volume", format_money(volume))
-    
+        st.metric("Market Cap", format_money(market['market_cap']))
+        st.metric("24h Volume", format_money(market['volume_24h']))
+        
     with cols[2]:
-        st.metric("7d Change", f"{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—")
-        st.metric("RSI (14)", f"{rsi:.1f}" if not pd.isna(rsi) else "—")
-    
+        st.metric("7d Change", f"{market['pct_change_7d']:.2f}%")
+        st.metric("RSI (14)", f"{technical['rsi']:.1f}")
+        
     with cols[3]:
         st.write("**Quick Info**")
-        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
-            liq_pct = (volume / market_cap) * 100
-            st.caption(f"Liquidity: {liq_pct:.1f}%")
-        st.caption(f"RSI Zone: {get_rsi_zone(rsi)}")
+        st.caption(f"RSI Zone: {get_rsi_zone(technical['rsi'])}")
         st.caption(f"Trend: {technical.get('trend', 'N/A').title()}")
-    
+        
     st.divider()
     
-    # ========================================================================
-    # INSIGHTS AND RISK SECTION
-    # ========================================================================
-    st.subheader("✅ AI-Powered Insights & Risk Assessment")
-    
+    # Insights Section
+    st.subheader("✅ AI-Powered Insights")
     main_col, risk_col = st.columns([2.5, 1])
     
     with main_col:
-        # Recommendation
-        st.markdown(
-            f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
-            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
-            f"{rec_emoji} {rec_label}</span>",
-            unsafe_allow_html=True
-        )
-        
-        # Score
         rec_score = insights.get('score', 0)
-        if not pd.isna(rec_score):
-            score_100 = max(0, min(100, int(round(rec_score * 100))))
-            st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
+        st.progress(rec_score, text=f"Confidence: {int(rec_score*100)}/100")
         
-        # Source
-        source = insights.get('source', 'unknown')
-        if source == 'gemini':
-            st.caption("🤖 Powered by Google Gemini 2.0 Flash")
-        elif source == 'fallback':
-            st.caption("⚙️ Rule-based analysis")
-        elif source == 'no_api_key':
-            st.warning("⚠️ Gemini API key not configured. Add your API key for AI-powered insights.")
-        
-        st.write("")
-        
-        # Sentiment visualization
-        st.markdown("**📰 News Sentiment Analysis**")
+        # Sentiment Bar
         pos = sentiment_breakdown['positive']
         neu = sentiment_breakdown['neutral']
         neg = sentiment_breakdown['negative']
+        st.markdown("**📰 Sentiment** " + sentiment_bar(pos, neu, neg))
         
-        st.markdown(sentiment_bar(pos, neu, neg))
-        st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
-        
-        # Insights text - UPDATED LOGIC TO SHOW EVERYTHING
+        # Insight Text
         insight_text = insights.get('insight', '')
-        
-        if insight_text:
-            if source == 'error':
-                st.error(f"⚠️ {insight_text}")
-            elif source == 'gemini':
-                st.info(insight_text)
-            elif len(insight_text) > 50:
-                st.info(insight_text)
-            else:
-                st.info(f"**{rec_label}** - Based on current market conditions and sentiment analysis.")
-    
+        if insights.get('source') == 'error':
+            st.error(f"⚠️ {insight_text}")
+        else:
+            st.info(insight_text)
+            
     with risk_col:
         st.markdown("**⚠️ Risk Factors**")
-        
-        # Liquidity risk
-        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
-            liq_pct = (volume / market_cap) * 100
-            if liq_pct < 5:
-                st.write("🔴 Low liquidity risk")
-            elif liq_pct < 10:
-                st.write("🟡 Medium liquidity")
-            else:
-                st.write("🟢 Good liquidity")
-        
-        # Volatility risk
-        volatility = technical.get('volatility', 0)
-        if not pd.isna(volatility):
-            if volatility > 0.10:
-                st.write("🔴 High volatility")
-            elif volatility > 0.05:
-                st.write("🟡 Medium volatility")
-            else:
-                st.write("🟢 Low volatility")
-        
-        # RSI warning
-        if not pd.isna(rsi):
-            if rsi >= 70:
-                st.write("🟡 Overbought (RSI)")
-            elif rsi <= 30:
-                st.write("🟡 Oversold (RSI)")
-        
-        st.write("")
-        st.markdown("**📈 Technical Signals**")
-        
-        # Momentum
-        momentum = technical.get('momentum', 0)
-        if not pd.isna(momentum):
-            if momentum > 5:
-                st.write("🟢 Strong upward momentum")
-            elif momentum > 0:
-                st.write("🟡 Slight upward momentum")
-            elif momentum > -5:
-                st.write("🟡 Slight downward momentum")
-            else:
-                st.write("🔴 Strong downward momentum")
-        
-        # Trend
-        trend = technical.get('trend', 'sideways')
-        if trend == 'uptrend':
-            st.write("🟢 Uptrend detected")
-        elif trend == 'downtrend':
-            st.write("🔴 Downtrend detected")
+        if technical.get('volatility', 0) > 0.05:
+            st.write("🔴 High Volatility")
         else:
-            st.write("🟡 Sideways movement")
-    
+            st.write("🟢 Low Volatility")
+            
+        if technical.get('trend') == 'downtrend':
+            st.write("🔴 Downtrend Detected")
+        
+        if technical['rsi'] > 70:
+            st.write("🟡 Overbought")
+        elif technical['rsi'] < 30:
+            st.write("🟡 Oversold")
+
     st.divider()
     
-    # ========================================================================
-    # FORECAST SECTION
-    # ========================================================================
-    st.subheader(f"🔮 {horizon_days}-Day Price Forecast")
-    
+    # Forecast Section
+    st.subheader(f"🔮 {horizon_days}-Day Forecast")
     forecast_table = result['forecast_table']
-    history_df = result.get('history')
     
     if forecast_table:
-        # Build forecast DataFrame
-        forecast_rows = []
-        for row in forecast_table:
-            date = row['date']
-            date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
-            ensemble = row.get('ensemble')
-            forecast_rows.append({
-                'Date': date_str,
-                'Forecast ($)': ensemble if ensemble is not None else None
-            })
+        df_forecast = pd.DataFrame([{
+            'Date': r['date'].strftime('%Y-%m-%d'),
+            'Forecast ($)': r['ensemble']
+        } for r in forecast_table]).set_index('Date')
         
-        df_forecast = pd.DataFrame(forecast_rows).set_index('Date')
-        
-        chart_col, table_col = st.columns([1.3, 1])
+        chart_col, table_col = st.columns([1.5, 1])
         
         with table_col:
-            st.dataframe(
-                df_forecast.style.format({'Forecast ($)': '${:,.2f}'}),
-                use_container_width=True, # Fixed: replaced True with 'stretch' logic for newer Streamlit? 
-                # WARNING: User's logs say use_container_width=True is deprecated for width='stretch'
-                # BUT the error says "replace use_container_width with width".
-                # Correct fix per error message:
-                width=None  # or use the default
-            )
-            # Re-reading the specific error: "Please replace use_container_width with width".
-            # For `use_container_width=True`, use `width='stretch'`.
-            # So:
-            st.dataframe(
-                df_forecast.style.format({'Forecast ($)': '${:,.2f}'}),
-                width=None # Streamlit defaults to full width often, but let's try 'use_container_width' logic manually
-            )
-            # Actually, to be safe with the specific warning "For use_container_width=True, use width='stretch'":
-            # I will use the modern API:
-        
+            st.dataframe(df_forecast.style.format({'Forecast ($)': '${:,.2f}'}), use_container_width=True)
+            
         with chart_col:
-            # Create combined chart
+            # Chart logic
+            history_df = result.get('history')
             combined_df = pd.DataFrame()
+            if history_df is not None and not history_df.empty:
+                 combined_df['History'] = history_df['price'].tail(60)
             
-            # Add history
-            if history_df is not None and not history_df.empty and 'price' in history_df.columns:
-                hist_series = history_df['price'].tail(90)
-                combined_df['History'] = hist_series
-            
-            # Add forecast
             if not df_forecast.empty:
                 forecast_series = df_forecast['Forecast ($)'].astype(float)
                 forecast_series.index = pd.to_datetime(forecast_series.index)
                 combined_df = pd.concat([combined_df, forecast_series.rename('Forecast')])
             
             if not combined_df.empty:
-                # Reset index for Altair
-                plot_df = combined_df.reset_index()
-                plot_df.columns = ['Date', 'History', 'Forecast']
-                plot_df = plot_df.melt('Date', var_name='Series', value_name='Price')
-                plot_df = plot_df.dropna(subset=['Price'])
-                
-                # Create chart
-                chart = alt.Chart(plot_df).mark_line(size=2).encode(
-                    x=alt.X('Date:T', title='Date'),
-                    y=alt.Y('Price:Q', title='Price (USD)', scale=alt.Scale(zero=False)),
-                    color=alt.Color(
-                        'Series:N',
-                        scale=alt.Scale(domain=['History', 'Forecast'], range=['#4e79a7', '#ff4d4f'])
-                    ),
-                    tooltip=['Date:T', 'Series:N', alt.Tooltip('Price:Q', format=',.2f')]
-                ).properties(height=350)
-                
-                # FIXED: use_container_width is deprecated in favor of specific width config in some versions,
-                # but standard Streamlit usually supports use_container_width in st.altair_chart.
-                # However, the user log flagged it. 
-                # The log said: "Please replace use_container_width with width... For use_container_width=True, use width='stretch'"
-                try:
-                    st.altair_chart(chart, use_container_width=True)
-                except:
-                    st.altair_chart(chart, theme="streamlit") 
-            else:
-                st.info("Insufficient data for chart")
-    else:
-        st.info("No forecast data available")
+                plot_df = combined_df.reset_index().melt('index', var_name='Series', value_name='Price').dropna()
+                chart = alt.Chart(plot_df).mark_line().encode(
+                    x='index:T', y=alt.Y('Price:Q', scale=alt.Scale(zero=False)), color='Series:N'
+                ).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
 
-# ... (Rest of app.py remains identical)
-# ...
-# ...
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def main():
+    st.title("💬 Crypto Analysis Agent")
+    st.caption("AI-powered analysis. Not financial advice.")
+    
+    if 'last_result' not in st.session_state:
+        st.session_state.last_result = None
+    
+    # Quick Start Buttons
+    cols = st.columns(len(COINS))
+    for i, coin in enumerate(COINS):
+        if cols[i].button(coin['symbol'], use_container_width=True):
+             st.session_state.user_input = f"{coin['symbol']} 7-day forecast"
+
+    # Input
+    user_message = st.text_input("Question", key="user_input", placeholder="e.g. 'Bitcoin forecast'")
+    
+    if st.button("🔍 Analyze", type="primary") and user_message:
+        with st.spinner("Analyzing..."):
+            try:
+                parsed = parse_user_message(user_message)
+                result = analyze_cryptocurrency(parsed['coin_id'], parsed['horizon_days'])
+                st.session_state.last_result = result
+                st.session_state.last_horizon = parsed['horizon_days']
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+                
+    if st.session_state.last_result:
+        render_summary_dashboard(st.session_state.last_result, st.session_state.get('last_horizon', 7))
+
 if __name__ == "__main__":
     main()
