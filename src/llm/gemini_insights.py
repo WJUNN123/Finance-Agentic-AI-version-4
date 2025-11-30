@@ -7,6 +7,7 @@ import google.generativeai as genai
 from typing import Dict, List, Optional
 import logging
 import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class GeminiInsightGenerator:
         api_key: str,
         model_name: str = "gemini-2.0-flash",
         temperature: float = 0.3,
-        max_tokens: int = 800  # Increased for detailed reasoning
+        max_tokens: int = 1000
     ):
         self.model_name = model_name
         self.temperature = temperature
@@ -35,16 +36,16 @@ class GeminiInsightGenerator:
         self,
         coin_symbol: str,
         market_data: Dict,
-        sentiment_data: Dict, # Changed to accept full sentiment details
+        sentiment_data: Dict,
         technical_indicators: Dict,
-        prediction_data: Dict, # Changed to accept full prediction arrays
+        prediction_data: Dict,
         top_headlines: List[str],
         horizon_days: int = 7
     ) -> Dict:
         """
-        Generate comprehensive investment insights
+        Generate comprehensive investment insights with consistent recommendations
         """
-        # 1. Build the data-rich prompt
+        # 1. Build structured prompt
         prompt = self._build_prompt(
             coin_symbol=coin_symbol,
             market_data=market_data,
@@ -61,36 +62,36 @@ class GeminiInsightGenerator:
                 max_output_tokens=self.max_tokens
             )
             
-            # 2. Get Response
             response = self.model.generate_content(prompt, generation_config=config)
-            insight_text = response.text.strip()
+            response_text = response.text.strip()
             
-            # 3. Extract Structured Data from LLM Output
-            rec = self._extract_recommendation(insight_text)
+            # Parse structured JSON response
+            parsed = self._parse_json_response(response_text)
             
-            # IMPORTANT: We extract the score FROM the LLM's text, 
-            # ensuring it matches the written reasoning.
-            score = self._extract_confidence_score(insight_text)
-
-            return {
-                "recommendation": rec,
-                "score": score,
-                "insight": insight_text,
-                "source": "gemini",
-                "model": self.model_name
-            }
+            if parsed:
+                return {
+                    "recommendation": parsed.get("recommendation", "HOLD / WAIT"),
+                    "score": parsed.get("confidence_score", 0.5),
+                    "insight": parsed.get("analysis", ""),
+                    "risks": parsed.get("risks", []),
+                    "source": "gemini",
+                    "model": self.model_name
+                }
+            else:
+                # Fallback parsing if JSON fails
+                logger.warning("Failed to parse JSON response, using fallback extraction")
+                return self._fallback_parse(response_text)
             
         except Exception as e:
             logger.error(f"Error generating insights: {e}")
             return self._get_fallback_response()
 
     def _build_prompt(self, coin_symbol, market_data, sentiment_data, tech, preds, headlines, horizon):
-        """Constructs a prompt that forces the LLM to act as a Data Science Synthesizer"""
+        """Constructs a structured prompt for consistent JSON output"""
         
-        # --- A. Process Market Data ---
         curr_price = market_data.get('price_usd', 0)
         
-        # --- B. Process Predictions (Calculate ROI) ---
+        # Process predictions
         pred_text = "No predictive models available."
         if preds and preds.get('ensemble'):
             ensemble = preds['ensemble']
@@ -98,115 +99,208 @@ class GeminiInsightGenerator:
                 final_pred = ensemble[-1]
                 pred_roi = ((final_pred - curr_price) / curr_price) * 100
                 
-                # Analyze curve shape
-                trend_shape = "linear"
+                # Analyze trajectory
+                trend_shape = "neutral"
                 if len(ensemble) > 2:
                     mid_point = ensemble[len(ensemble)//2]
-                    # Check for simple hump/dip patterns
                     if mid_point > curr_price and mid_point > final_pred:
-                        trend_shape = "volatility (rise then fall)"
+                        trend_shape = "volatile (spike then decline)"
                     elif mid_point < curr_price and mid_point < final_pred:
                         trend_shape = "recovery (dip then rise)"
+                    elif final_pred > curr_price:
+                        trend_shape = "sustained upward"
+                    else:
+                        trend_shape = "sustained downward"
                 
                 pred_text = (
-                    f"Hybrid LSTM+XGBoost Model Forecast ({horizon} days):\n"
-                    f"   - Predicted End Price: ${final_pred:,.2f}\n"
-                    f"   - Projected ROI: {pred_roi:+.2f}%\n"
-                    f"   - Trajectory Shape: {trend_shape}"
+                    f"Predicted End Price: ${final_pred:,.2f} | "
+                    f"Projected ROI: {pred_roi:+.2f}% | "
+                    f"Trajectory: {trend_shape}"
                 )
 
-        # --- C. Process Sentiment ---
+        # Process sentiment
         sent_score = sentiment_data.get('score', 0)
         breakdown = sentiment_data.get('breakdown', {'positive': 0, 'negative': 0, 'neutral': 0})
+        sent_interpretation = self._interpret_sentiment_score(sent_score)
         sent_text = (
-            f"News Sentiment (RoBERTa Model):\n"
-            f"   - Aggregate Score: {sent_score:.2f} (Scale: -1.0 to +1.0)\n"
-            f"   - Breakdown: {breakdown.get('positive', 0):.1f}% Positive, "
-            f"{breakdown.get('neutral', 0):.1f}% Neutral, "
-            f"{breakdown.get('negative', 0):.1f}% Negative"
+            f"Aggregate Score: {sent_score:.2f}/1.0 ({sent_interpretation}) | "
+            f"Breakdown: {breakdown.get('positive', 0):.0f}% Positive, "
+            f"{breakdown.get('neutral', 0):.0f}% Neutral, "
+            f"{breakdown.get('negative', 0):.0f}% Negative"
         )
 
-        # --- D. Process Technicals ---
+        # Process technicals
         rsi = tech.get('rsi', 50)
+        volatility = tech.get('volatility', 0)
+        trend = tech.get('trend', 'sideways')
         
-        # Interpret Bollinger Bands
+        rsi_zone = self._get_rsi_zone(rsi)
+        
         bb_status = "Within Bands"
         if tech.get('bb_upper') and curr_price > tech['bb_upper']: 
-            bb_status = "ABOVE Upper Band (Statistically Overextended)"
+            bb_status = "Above Upper Band (Overbought)"
         elif tech.get('bb_lower') and curr_price < tech['bb_lower']: 
-            bb_status = "BELOW Lower Band (Statistically Oversold)"
+            bb_status = "Below Lower Band (Oversold)"
         
         tech_text = (
-            f"Technical Indicators:\n"
-            f"   - RSI (14): {rsi:.1f} ({self._get_rsi_zone(rsi)})\n"
-            f"   - Bollinger Bands: {bb_status}\n"
-            f"   - Trend Status: {tech.get('trend', 'Neutral')}\n"
-            f"   - Volatility Index: {tech.get('volatility', 0):.4f}"
+            f"RSI: {rsi:.1f} ({rsi_zone}) | "
+            f"Bollinger Bands: {bb_status} | "
+            f"Trend: {trend} | "
+            f"Volatility: {volatility:.4f}"
         )
 
-        # --- E. The Prompt ---
-        return f"""
-You are a Senior Crypto Investment Analyst. Synthesize the provided data to generate a final recommendation for {coin_symbol}.
+        # Headlines summary
+        headlines_text = "\n  ".join(headlines[:3]) if headlines else "No recent headlines"
 
-### INPUT DATA
+        return f"""You are a Professional Crypto Investment Analyst. Analyze the following data for {coin_symbol} and provide a clear, consistent recommendation.
 
-1. {pred_text}
-2. {sent_text}
-3. {tech_text}
-4. Recent Headlines:
-   {chr(10).join(['- ' + h for h in headlines[:3]])}
+=== MARKET DATA ===
+Current Price: ${curr_price:,.2f}
+Forecast ({horizon} days): {pred_text}
 
-### ANALYSIS LOGIC
-- **Conflict Resolution:** If the Predictive Model projects a massive drop (>5%) but Sentiment is Positive and RSI is Oversold, reduce confidence in the drop. The model might be reacting to lagging momentum.
-- **Confirmation:** If Technical Trend is Down AND Model predicts Drop AND Sentiment is Neutral/Negative, high confidence in SELL.
-- **RSI Check:** If RSI is < 30, be careful recommending SELL even if the model predicts a drop (potential bounce area).
+=== SENTIMENT ANALYSIS ===
+News Sentiment: {sent_text}
 
-### OUTPUT FORMAT
-You MUST provide the output in this exact structure:
+=== TECHNICAL INDICATORS ===
+{tech_text}
 
-**Analysis Synthesis**
-[A concise paragraph (~3 sentences) explaining how the model prediction aligns or conflicts with news sentiment and technicals. Be specific about the ROI %.]
+=== RECENT HEADLINES ===
+  {headlines_text}
 
-**Key Risks**
-[Bullet points of specific risks based on the data provided.]
+=== YOUR TASK ===
+Provide a JSON response with EXACTLY this structure (no markdown, pure JSON):
+{{
+  "recommendation": "BUY" or "SELL" or "HOLD",
+  "confidence_score": 0.0 to 1.0,
+  "analysis": "2-3 sentence professional summary explaining your recommendation",
+  "risks": ["risk 1", "risk 2", "risk 3"],
+  "reasoning": "Brief explanation of how you reconciled conflicting signals"
+}}
 
-**Confidence Score**
-[A single number between 0 and 100 representing how much the data aligns. e.g. "75"]
+=== DECISION LOGIC ===
+1. Strong indicators (RSI, Trend, Price Prediction, Sentiment) must ALIGN for BUY or SELL
+2. If signals conflict, lean toward HOLD with lower confidence
+3. RSI < 30 = Oversold (watch for bounce, cautious on SELL)
+4. RSI > 70 = Overbought (watch for pullback, cautious on BUY)
+5. Price prediction > current by 5%+ AND positive sentiment = BUY candidate
+6. Price prediction < current by 5%+ AND negative sentiment = SELL candidate
+7. Otherwise = HOLD
 
-**Recommendation**
-[One word: BUY, SELL, or HOLD]
-"""
+Respond with ONLY valid JSON, no other text."""
 
-    def _extract_recommendation(self, text: str) -> str:
-        match = re.search(r"Recommendation\s*\n\**([A-Z\s/]+)\**", text, re.IGNORECASE)
-        if match:
-            cleaned = match.group(1).strip().upper()
-            if "BUY" in cleaned: return "BUY"
-            if "SELL" in cleaned: return "SELL / AVOID"
-        return "HOLD / WAIT"
+    def _parse_json_response(self, response_text: str) -> Optional[Dict]:
+        """Extract and parse JSON from response"""
+        try:
+            # Try direct JSON parsing
+            parsed = json.loads(response_text)
+            return self._validate_parsed_response(parsed)
+        except json.JSONDecodeError:
+            # Try to extract JSON from text
+            json_match = re.search(r'\{[^{}]*"recommendation"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group())
+                    return self._validate_parsed_response(parsed)
+                except:
+                    pass
+        
+        return None
 
-    def _extract_confidence_score(self, text: str) -> float:
-        # Regex to find "Confidence Score" followed strictly by a number
-        match = re.search(r"Confidence Score\**\s*\n\s*(\d{1,3})", text, re.IGNORECASE)
-        if match:
-            score = int(match.group(1))
-            return min(1.0, max(0.0, score / 100.0))
-        return 0.5 # Default if parsing fails
-
-    def _get_rsi_zone(self, rsi):
-        if rsi >= 70: return "Overbought"
-        if rsi <= 30: return "Oversold"
-        return "Neutral"
-
-    def _get_fallback_response(self):
+    def _validate_parsed_response(self, parsed: Dict) -> Dict:
+        """Validate and normalize parsed response"""
+        # Normalize recommendation
+        rec = parsed.get("recommendation", "HOLD").upper().strip()
+        if "BUY" in rec:
+            rec = "BUY"
+        elif "SELL" in rec:
+            rec = "SELL"
+        else:
+            rec = "HOLD"
+        
+        # Normalize confidence score
+        score = parsed.get("confidence_score", 0.5)
+        if isinstance(score, str):
+            score = float(score.replace('%', '')) / 100.0
+        score = max(0.0, min(1.0, float(score)))
+        
+        # Get analysis text
+        analysis = parsed.get("analysis", "")
+        if not analysis:
+            analysis = parsed.get("reasoning", "")
+        
+        # Get risks
+        risks = parsed.get("risks", [])
+        if not isinstance(risks, list):
+            risks = []
+        
         return {
-            "recommendation": "HOLD / WAIT",
-            "score": 0.0,
-            "insight": "AI unavailable. Based on standard rules: Check RSI and Trend manually.",
-            "source": "fallback"
+            "recommendation": rec,
+            "confidence_score": score,
+            "analysis": analysis,
+            "risks": risks
         }
 
-# Singleton accessor
+    def _fallback_parse(self, text: str) -> Dict:
+        """Fallback parsing if JSON extraction fails"""
+        logger.warning("Using fallback text parsing")
+        
+        # Extract recommendation
+        rec = "HOLD"
+        if re.search(r'\bBUY\b', text, re.IGNORECASE):
+            rec = "BUY"
+        elif re.search(r'\bSELL\b', text, re.IGNORECASE):
+            rec = "SELL"
+        
+        # Extract confidence score
+        score = 0.5
+        score_match = re.search(r'(?:confidence|score)[:\s]+(\d+)', text, re.IGNORECASE)
+        if score_match:
+            score = int(score_match.group(1)) / 100.0
+        
+        return {
+            "recommendation": rec,
+            "score": score,
+            "insight": text[:500],  # First 500 chars
+            "risks": [],
+            "source": "gemini",
+            "model": self.model_name
+        }
+
+    def _interpret_sentiment_score(self, score: float) -> str:
+        """Convert sentiment score to text"""
+        if score >= 0.5:
+            return "Very Positive"
+        elif score >= 0.2:
+            return "Positive"
+        elif score >= -0.2:
+            return "Neutral"
+        elif score >= -0.5:
+            return "Negative"
+        else:
+            return "Very Negative"
+
+    def _get_rsi_zone(self, rsi: float) -> str:
+        """Interpret RSI value"""
+        if rsi >= 70:
+            return "Overbought"
+        elif rsi <= 30:
+            return "Oversold"
+        else:
+            return "Neutral"
+
+    def _get_fallback_response(self) -> Dict:
+        """Return fallback response on error"""
+        return {
+            "recommendation": "HOLD",
+            "score": 0.5,
+            "insight": "Unable to generate AI insights. Please check your API key and try again.",
+            "risks": ["API unavailable"],
+            "source": "fallback",
+            "model": self.model_name
+        }
+
+
 def generate_insights(api_key: str, **kwargs) -> Dict:
+    """Convenient function to generate insights"""
     generator = GeminiInsightGenerator(api_key=api_key)
     return generator.generate_insights(**kwargs)
