@@ -562,13 +562,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # ========================================================================
     st.markdown(f"### 🔍 {coin_name} ({symbol})")
     
-    cols = st.columns([1.5, 1.2, 1.2, 1.2])
+    cols = st.columns([0.9, 1.2, 1.2, 1.3], gap="large")
     
-    # Price column
+    # Price column - COMPACT
     with cols[0]:
-        st.markdown("**Price**")
         st.markdown(
-            f"<span style='font-size:2.2rem;font-weight:800'>${price:,.2f}</span>",
+            f"<div style='font-size:1.6rem;font-weight:900;margin:0;padding:0;'>${price:,.0f}</div>",
             unsafe_allow_html=True
         )
         
@@ -576,19 +575,11 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             arrow = "📈" if pct_24h >= 0 else "📉"
             color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
             sign = "+" if pct_24h >= 0 else ""
-            st.markdown(
-                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
-                f"color:{color};font-weight:700'>{arrow} {sign}{pct_24h:.2f}% · 24h</span>",
-                unsafe_allow_html=True
-            )
+            st.caption(f"{arrow} {sign}{pct_24h:.2f}% (24h)")
         
-        st.write("")  # Spacing
-        
-        # Recommendation badge
         st.markdown(
-            f"<span style='display:inline-block;padding:8px 14px;"
-            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
-            f"font-weight:800;font-size:0.95rem;border:1px solid {rec_color}44'>"
+            f"<span style='display:inline-block;padding:4px 10px;border-radius:6px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:700;font-size:0.85rem;'>"
             f"{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
