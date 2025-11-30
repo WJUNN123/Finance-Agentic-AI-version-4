@@ -413,11 +413,13 @@ def build_analysis_summary(
         Formatted string with analysis and key metrics
     """
     
-    sections = []
+    lines = []
     
     # ===== SECTION 1: AI INSIGHT =====
     if insight_text and len(insight_text) > 20:
-        sections.append(f"**AI Analysis:** {insight_text}")
+        lines.append("**AI Analysis:**")
+        lines.append(insight_text)
+        lines.append("")
     
     # ===== SECTION 2: PRICE FORECAST =====
     if forecast_table:
@@ -429,10 +431,9 @@ def build_analysis_summary(
             price_change_pct = (price_change / current_price) * 100 if current_price > 0 else 0
             
             direction = "📈 UP" if price_change_pct > 0 else "📉 DOWN"
-            sections.append(
-                f"\n**{horizon_days}-Day Forecast:** {direction} "
-                f"{abs(price_change_pct):.2f}% to ${final_forecast:,.0f}"
-            )
+            lines.append("**7-Day Forecast:**")
+            lines.append(f"{direction} {abs(price_change_pct):.2f}% to ${final_forecast:,.0f}")
+            lines.append("")
     
     # ===== SECTION 3: TECHNICAL ANALYSIS =====
     technical_signals = []
@@ -464,7 +465,9 @@ def build_analysis_summary(
             technical_signals.append("Low Volatility")
     
     if technical_signals:
-        sections.append(f"\n**Technicals:** {' | '.join(technical_signals)}")
+        lines.append("**Technical Signals:**")
+        lines.append(" | ".join(technical_signals))
+        lines.append("")
     
     # ===== SECTION 4: SENTIMENT =====
     pos = sentiment_breakdown.get('positive', 0)
@@ -473,27 +476,25 @@ def build_analysis_summary(
     
     sentiment_signal = ""
     if pos > neg and pos > 40:
-        sentiment_signal = "🟢 Positive Sentiment"
+        sentiment_signal = "🟢 Positive"
     elif neg > pos and neg > 40:
-        sentiment_signal = "🔴 Negative Sentiment"
+        sentiment_signal = "🔴 Negative"
     else:
-        sentiment_signal = "⚪ Neutral Sentiment"
+        sentiment_signal = "⚪ Neutral"
     
-    sections.append(
-        f"\n**Sentiment:** {sentiment_signal} ({pos:.0f}% pos, {neu:.0f}% neu, {neg:.0f}% neg)"
-    )
+    lines.append("**Sentiment:**")
+    lines.append(f"{sentiment_signal} ({pos:.0f}% pos, {neu:.0f}% neu, {neg:.0f}% neg)")
+    lines.append("")
     
     # ===== SECTION 5: KEY RISKS =====
     if risks and isinstance(risks, list) and len(risks) > 0:
-        risk_text = " | ".join(risks[:2])  # Show top 2 risks
-        sections.append(f"\n**⚠️ Key Risks:** {risk_text}")
+        lines.append("**⚠️ Key Risks:**")
+        for i, risk in enumerate(risks[:3], 1):  # Show top 3 risks
+            lines.append(f"{i}. {risk}")
+        lines.append("")
     
     # ===== SECTION 6: RECOMMENDATION RATIONALE =====
     price_change_24h = market_data.get('pct_change_24h', 0)
-    volume = market_data.get('volume_24h', 0)
-    market_cap = market_data.get('market_cap', 1)
-    
-    liquidity_ratio = (volume / market_cap * 100) if market_cap > 0 else 0
     
     recommendation_reason = ""
     if recommendation == "BUY":
@@ -512,10 +513,11 @@ def build_analysis_summary(
             f"a consolidation period before new positions."
         )
     
-    sections.append(f"\n**Why {recommendation}?** {recommendation_reason}")
+    lines.append("**Why " + recommendation + "?**")
+    lines.append(recommendation_reason)
     
-    # ===== FINAL SUMMARY =====
-    summary = "".join(sections)
+    # Join with proper markdown line breaks
+    summary = "\n\n".join(lines)
     
     return summary
 # ============================================================================
