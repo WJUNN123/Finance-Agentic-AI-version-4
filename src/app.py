@@ -401,7 +401,7 @@ def analyze_cryptocurrency(
 # ============================================================================
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
-    """Render the main summary dashboard with all insights"""
+    """Render the main summary dashboard with all insights - FIXED VERSION"""
     
     market = result['market']
     technical = result['technical']
@@ -418,70 +418,30 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     volume = market['volume_24h']
     rsi = technical['rsi']
     
-    # Recommendation styling
-    rec_text = insights['recommendation']
-    rec_label, rec_emoji, rec_color = get_recommendation_style(rec_text)
+    # Recommendation styling - FIXED: Use consistent recommendation from insights
+    rec_text = insights.get('recommendation', 'HOLD / WAIT').upper().strip()
+    if "BUY" in rec_text:
+        rec_label = "BUY"
+        rec_emoji = "🟢"
+        rec_color = "#16a34a"
+    elif "SELL" in rec_text:
+        rec_label = "SELL / AVOID"
+        rec_emoji = "🔴"
+        rec_color = "#ef4444"
+    else:
+        rec_label = "HOLD / WAIT"
+        rec_emoji = "🟡"
+        rec_color = "#f59e0b"
     
     # ========================================================================
     # HEADER SECTION
     # ========================================================================
-    st.markdown(f"### 📊 {coin_name} ({symbol})")
-    
-    cols = st.columns([1.5, 1.2, 1.2, 1.2])
-    
-    # Price column
-    with cols[0]:
-        st.markdown("**Price**")
-        st.markdown(
-            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
-            unsafe_allow_html=True
-        )
-        
-        if not pd.isna(pct_24h):
-            arrow = "🔺" if pct_24h >= 0 else "🔻"
-            color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
-            st.markdown(
-                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
-                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
-                unsafe_allow_html=True
-            )
-        
-        # Recommendation badge
-        st.markdown(
-            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
-            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
-            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
-            unsafe_allow_html=True
-        )
-    
-    # Market metrics
-    with cols[1]:
-        st.metric("Market Cap", format_money(market_cap))
-        st.metric("24h Volume", format_money(volume))
-    
-    with cols[2]:
-        st.metric("7d Change", f"{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—")
-        st.metric("RSI (14)", f"{rsi:.1f}" if not pd.isna(rsi) else "—")
-    
-    with cols[3]:
-        st.write("**Quick Info**")
-        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
-            liq_pct = (volume / market_cap) * 100
-            st.caption(f"Liquidity: {liq_pct:.1f}%")
-        st.caption(f"RSI Zone: {get_rsi_zone(rsi)}")
-        st.caption(f"Trend: {technical.get('trend', 'N/A').title()}")
-    
-    st.divider()
-    
-    # ========================================================================
-    # INSIGHTS AND RISK SECTION
-    # ========================================================================
-    st.subheader("✅ AI-Powered Insights & Risk Assessment")
+     st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
     main_col, risk_col = st.columns([2.5, 1])
     
     with main_col:
-        # Recommendation
+        # Recommendation - CONSISTENT with top
         st.markdown(
             f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
             f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
@@ -489,13 +449,16 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             unsafe_allow_html=True
         )
         
-        # Score
-        rec_score = insights.get('score', 0)
+        # Confidence score - FIXED: Display as percentage
+        rec_score = insights.get('score', 0.5)
         if not pd.isna(rec_score):
-            score_100 = max(0, min(100, int(round(50 + 50 * rec_score))))
+            if isinstance(rec_score, float):
+                score_100 = max(0, min(100, int(round(rec_score * 100))))
+            else:
+                score_100 = int(rec_score)
             st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
         
-        # Source
+        # Source indicator
         source = insights.get('source', 'unknown')
         if source == 'gemini':
             st.caption("🤖 Powered by Google Gemini 2.0 Flash")
@@ -507,7 +470,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.write("")
         
         # Sentiment visualization
-        st.markdown("**📰 News Sentiment Analysis**")
+        st.markdown("**📊 News Sentiment Analysis**")
         pos = sentiment_breakdown['positive']
         neu = sentiment_breakdown['neutral']
         neg = sentiment_breakdown['negative']
@@ -515,9 +478,11 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.markdown(sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Insights text
+        # Insights text - FIXED: Clear, readable content
+        st.write("")
+        st.markdown("**📋 Analysis Summary**")
         insight_text = insights.get('insight', '')
-        if insight_text and len(insight_text) > 50:
+        if insight_text and len(insight_text) > 20:
             st.info(insight_text)
         else:
             st.info(f"**{rec_label}** - Based on current market conditions and sentiment analysis.")
@@ -525,32 +490,36 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     with risk_col:
         st.markdown("**⚠️ Risk Factors**")
         
-        # Liquidity risk
-        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
-            liq_pct = (volume / market_cap) * 100
-            if liq_pct < 5:
-                st.write("🔴 Low liquidity risk")
-            elif liq_pct < 10:
-                st.write("🟡 Medium liquidity")
-            else:
-                st.write("🟢 Good liquidity")
-        
-        # Volatility risk
-        volatility = technical.get('volatility', 0)
-        if not pd.isna(volatility):
-            if volatility > 0.10:
-                st.write("🔴 High volatility")
-            elif volatility > 0.05:
-                st.write("🟡 Medium volatility")
-            else:
-                st.write("🟢 Low volatility")
-        
-        # RSI warning
-        if not pd.isna(rsi):
-            if rsi >= 70:
-                st.write("🟡 Overbought (RSI)")
-            elif rsi <= 30:
-                st.write("🟡 Oversold (RSI)")
+        # Display risks from Gemini if available
+        risks = insights.get('risks', [])
+        if risks and isinstance(risks, list):
+            for risk in risks[:3]:  # Show top 3 risks
+                st.write(f"• {risk}")
+        else:
+            # Fallback risk calculation
+            if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
+                liq_pct = (volume / market_cap) * 100
+                if liq_pct < 5:
+                    st.write("🔴 Low liquidity risk")
+                elif liq_pct < 10:
+                    st.write("🟡 Medium liquidity")
+                else:
+                    st.write("🟢 Good liquidity")
+            
+            volatility = technical.get('volatility', 0)
+            if not pd.isna(volatility):
+                if volatility > 0.10:
+                    st.write("🔴 High volatility")
+                elif volatility > 0.05:
+                    st.write("🟡 Medium volatility")
+                else:
+                    st.write("🟢 Low volatility")
+            
+            if not pd.isna(rsi):
+                if rsi >= 70:
+                    st.write("🟡 Overbought (RSI)")
+                elif rsi <= 30:
+                    st.write("🟡 Oversold (RSI)")
         
         st.write("")
         st.markdown("**📈 Technical Signals**")
@@ -581,7 +550,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # ========================================================================
     # FORECAST SECTION
     # ========================================================================
-    st.subheader(f"🔮 {horizon_days}-Day Price Forecast")
+    st.subheader(f"🎯 {horizon_days}-Day Price Forecast")
     
     forecast_table = result['forecast_table']
     history_df = result.get('history')
