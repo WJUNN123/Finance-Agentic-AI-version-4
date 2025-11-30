@@ -396,6 +396,128 @@ def analyze_cryptocurrency(
         logger.error(f"Analysis error: {e}", exc_info=True)
         return {'error': str(e)}
 
+def build_analysis_summary(
+    insight_text: str,
+    recommendation: str,
+    market_data: Dict,
+    technical: Dict,
+    sentiment_breakdown: Dict,
+    forecast_table: List,
+    horizon_days: int,
+    risks: List
+) -> str:
+    """
+    Build a comprehensive analysis summary combining AI insight with key data points
+    
+    Returns:
+        Formatted string with analysis and key metrics
+    """
+    
+    sections = []
+    
+    # ===== SECTION 1: AI INSIGHT =====
+    if insight_text and len(insight_text) > 20:
+        sections.append(f"**AI Analysis:** {insight_text}")
+    
+    # ===== SECTION 2: PRICE FORECAST =====
+    if forecast_table:
+        current_price = market_data.get('price_usd', 0)
+        final_forecast = forecast_table[-1].get('ensemble') if forecast_table else None
+        
+        if final_forecast:
+            price_change = final_forecast - current_price
+            price_change_pct = (price_change / current_price) * 100 if current_price > 0 else 0
+            
+            direction = "📈 UP" if price_change_pct > 0 else "📉 DOWN"
+            sections.append(
+                f"\n**{horizon_days}-Day Forecast:** {direction} "
+                f"{abs(price_change_pct):.2f}% to ${final_forecast:,.0f}"
+            )
+    
+    # ===== SECTION 3: TECHNICAL ANALYSIS =====
+    technical_signals = []
+    
+    rsi = technical.get('rsi', 50)
+    if not pd.isna(rsi):
+        if rsi >= 70:
+            technical_signals.append(f"RSI {rsi:.0f} (Overbought)")
+        elif rsi <= 30:
+            technical_signals.append(f"RSI {rsi:.0f} (Oversold)")
+        else:
+            technical_signals.append(f"RSI {rsi:.0f} (Neutral)")
+    
+    trend = technical.get('trend', 'sideways')
+    if trend == 'uptrend':
+        technical_signals.append("📈 Uptrend")
+    elif trend == 'downtrend':
+        technical_signals.append("📉 Downtrend")
+    else:
+        technical_signals.append("〰️ Sideways")
+    
+    volatility = technical.get('volatility', 0)
+    if not pd.isna(volatility):
+        if volatility > 0.10:
+            technical_signals.append("High Volatility ⚡")
+        elif volatility > 0.05:
+            technical_signals.append("Medium Volatility")
+        else:
+            technical_signals.append("Low Volatility")
+    
+    if technical_signals:
+        sections.append(f"\n**Technicals:** {' | '.join(technical_signals)}")
+    
+    # ===== SECTION 4: SENTIMENT =====
+    pos = sentiment_breakdown.get('positive', 0)
+    neg = sentiment_breakdown.get('negative', 0)
+    neu = sentiment_breakdown.get('neutral', 0)
+    
+    sentiment_signal = ""
+    if pos > neg and pos > 40:
+        sentiment_signal = "🟢 Positive Sentiment"
+    elif neg > pos and neg > 40:
+        sentiment_signal = "🔴 Negative Sentiment"
+    else:
+        sentiment_signal = "⚪ Neutral Sentiment"
+    
+    sections.append(
+        f"\n**Sentiment:** {sentiment_signal} ({pos:.0f}% pos, {neu:.0f}% neu, {neg:.0f}% neg)"
+    )
+    
+    # ===== SECTION 5: KEY RISKS =====
+    if risks and isinstance(risks, list) and len(risks) > 0:
+        risk_text = " | ".join(risks[:2])  # Show top 2 risks
+        sections.append(f"\n**⚠️ Key Risks:** {risk_text}")
+    
+    # ===== SECTION 6: RECOMMENDATION RATIONALE =====
+    price_change_24h = market_data.get('pct_change_24h', 0)
+    volume = market_data.get('volume_24h', 0)
+    market_cap = market_data.get('market_cap', 1)
+    
+    liquidity_ratio = (volume / market_cap * 100) if market_cap > 0 else 0
+    
+    recommendation_reason = ""
+    if recommendation == "BUY":
+        recommendation_reason = (
+            f"Strong upward signals with {price_change_24h:+.1f}% daily change "
+            f"and favorable technicals suggest entry opportunity."
+        )
+    elif recommendation == "SELL / AVOID":
+        recommendation_reason = (
+            f"Downward pressure with {price_change_24h:+.1f}% daily change "
+            f"and weak technicals suggest caution or exit."
+        )
+    else:  # HOLD
+        recommendation_reason = (
+            f"Mixed signals with {price_change_24h:+.1f}% daily change warrant "
+            f"a consolidation period before new positions."
+        )
+    
+    sections.append(f"\n**Why {recommendation}?** {recommendation_reason}")
+    
+    # ===== FINAL SUMMARY =====
+    summary = "".join(sections)
+    
+    return summary
 # ============================================================================
 # UI RENDERING FUNCTIONS
 # ============================================================================
