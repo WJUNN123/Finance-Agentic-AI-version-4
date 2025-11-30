@@ -436,6 +436,57 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # ========================================================================
     # HEADER SECTION
     # ========================================================================
+    st.markdown(f"### 🔍 {coin_name} ({symbol})")
+    
+    cols = st.columns([1.5, 1.2, 1.2, 1.2])
+    
+    # Price column
+    with cols[0]:
+        st.markdown("**Price**")
+        st.markdown(
+            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
+            unsafe_allow_html=True
+        )
+        
+        if not pd.isna(pct_24h):
+            arrow = "📈" if pct_24h >= 0 else "📉"
+            color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
+            st.markdown(
+                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
+                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
+                unsafe_allow_html=True
+            )
+        
+        # Recommendation badge
+        st.markdown(
+            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
+            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
+            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
+            unsafe_allow_html=True
+        )
+    
+    # Market metrics
+    with cols[1]:
+        st.metric("Market Cap", format_money(market_cap))
+        st.metric("24h Volume", format_money(volume))
+    
+    with cols[2]:
+        st.metric("7d Change", f"{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—")
+        st.metric("RSI (14)", f"{rsi:.1f}" if not pd.isna(rsi) else "—")
+    
+    with cols[3]:
+        st.write("**Quick Info**")
+        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
+            liq_pct = (volume / market_cap) * 100
+            st.caption(f"Liquidity: {liq_pct:.1f}%")
+        st.caption(f"RSI Zone: {get_rsi_zone(rsi)}")
+        st.caption(f"Trend: {technical.get('trend', 'N/A').title()}")
+    
+    st.divider()
+    
+    # ========================================================================
+    # INSIGHTS AND RISK SECTION 
+    # ========================================================================
     st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
     main_col, risk_col = st.columns([2.5, 1])
@@ -478,14 +529,23 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.markdown(sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Insights text - FIXED: Clear, readable content
+        # Insights text - ENHANCED: More detailed analysis
         st.write("")
         st.markdown("**📋 Analysis Summary**")
-        insight_text = insights.get('insight', '')
-        if insight_text and len(insight_text) > 20:
-            st.info(insight_text)
-        else:
-            st.info(f"**{rec_label}** - Based on current market conditions and sentiment analysis.")
+        
+        # Build comprehensive analysis summary
+        analysis_summary = build_analysis_summary(
+            insight_text=insights.get('insight', ''),
+            recommendation=rec_label,
+            market_data=market,
+            technical=technical,
+            sentiment_breakdown=sentiment_breakdown,
+            forecast_table=result.get('forecast_table', []),
+            horizon_days=horizon_days,
+            risks=insights.get('risks', [])
+        )
+        
+        st.info(analysis_summary)
     
     with risk_col:
         st.markdown("**⚠️ Risk Factors**")
