@@ -560,29 +560,35 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # ========================================================================
     # HEADER SECTION
     # ========================================================================
-    st.markdown(f"### 🔍 {coin_name} ({symbol})")
+    st.markdown(f"### 📊 {coin_name} ({symbol})")
     
-    cols = st.columns([0.9, 1.2, 1.2, 1.3], gap="large")
+    cols = st.columns([1.5, 1.2, 1.2, 1.2])
     
-    # Price column - COMPACT
+    # Price column
     with cols[0]:
+        st.markdown("**Price**")
         st.markdown(
-            f"<div style='font-size:1.6rem;font-weight:900;margin:0;padding:0;'>${price:,.0f}</div>",
+            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
             unsafe_allow_html=True
         )
         
         if not pd.isna(pct_24h):
-            arrow = "📈" if pct_24h >= 0 else "📉"
+            arrow = "🔺" if pct_24h >= 0 else "🔻"
             color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
-            sign = "+" if pct_24h >= 0 else ""
-            st.caption(f"{arrow} {sign}{pct_24h:.2f}% (24h)")
+            st.markdown(
+                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
+                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
+                unsafe_allow_html=True
+            )
         
+        # Recommendation badge
         st.markdown(
-            f"<span style='display:inline-block;padding:4px 10px;border-radius:6px;"
-            f"background:{rec_color}22;color:{rec_color};font-weight:700;font-size:0.85rem;'>"
-            f"{rec_emoji} {rec_label}</span>",
+            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
+            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
+            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
+
     
     # Market metrics
     with cols[1]:
