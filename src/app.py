@@ -634,7 +634,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # ========================================================================
     # INSIGHTS AND RISK SECTION 
     # ========================================================================
-   st.subheader("✅ AI-Powered Insights & Risk Assessment")
+    st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
     main_col, risk_col = st.columns([2.5, 1])
     
