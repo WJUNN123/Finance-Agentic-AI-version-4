@@ -568,24 +568,28 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     with cols[0]:
         st.markdown("**Price**")
         st.markdown(
-            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
+            f"<span style='font-size:2.2rem;font-weight:800'>${price:,.2f}</span>",
             unsafe_allow_html=True
         )
         
         if not pd.isna(pct_24h):
             arrow = "📈" if pct_24h >= 0 else "📉"
             color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
+            sign = "+" if pct_24h >= 0 else ""
             st.markdown(
                 f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
-                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
+                f"color:{color};font-weight:700'>{arrow} {sign}{pct_24h:.2f}% · 24h</span>",
                 unsafe_allow_html=True
             )
         
+        st.write("")  # Spacing
+        
         # Recommendation badge
         st.markdown(
-            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
+            f"<span style='display:inline-block;padding:8px 14px;"
             f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
-            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
+            f"font-weight:800;font-size:0.95rem;border:1px solid {rec_color}44'>"
+            f"{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
     
@@ -595,23 +599,42 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.metric("24h Volume", format_money(volume))
     
     with cols[2]:
-        st.metric("7d Change", f"{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—")
-        st.metric("RSI (14)", f"{rsi:.1f}" if not pd.isna(rsi) else "—")
+        # 7d Change with sign
+        pct_7d_sign = "+" if pct_7d >= 0 else "" if pd.isna(pct_7d) else ""
+        pct_7d_display = f"{pct_7d_sign}{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—"
+        st.metric("7d Change", pct_7d_display)
+        
+        # RSI with zone
+        if not pd.isna(rsi):
+            rsi_zone = get_rsi_zone(rsi)
+            rsi_display = f"{rsi:.1f} ({rsi_zone})"
+        else:
+            rsi_display = "—"
+        st.metric("RSI (14)", rsi_display)
     
     with cols[3]:
         st.write("**Quick Info**")
+        
+        # Liquidity ratio
         if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
             liq_pct = (volume / market_cap) * 100
-            st.caption(f"Liquidity: {liq_pct:.1f}%")
-        st.caption(f"RSI Zone: {get_rsi_zone(rsi)}")
-        st.caption(f"Trend: {technical.get('trend', 'N/A').title()}")
+            liq_icon = "🟢" if liq_pct > 10 else "🟡" if liq_pct > 5 else "🔴"
+            st.caption(f"{liq_icon} Liquidity: {liq_pct:.1f}%")
+        
+        # RSI Zone (redundant but in quick info)
+        rsi_info = f"📊 {get_rsi_zone(rsi)}"
+        st.caption(rsi_info)
+        
+        # Trend
+        trend_icon = "📈" if technical.get('trend') == 'uptrend' else "📉" if technical.get('trend') == 'downtrend' else "〰️"
+        st.caption(f"{trend_icon} Trend: {technical.get('trend', 'N/A').title()}")
     
     st.divider()
     
     # ========================================================================
     # INSIGHTS AND RISK SECTION 
     # ========================================================================
-    st.subheader("✅ AI-Powered Insights & Risk Assessment")
+   st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
     main_col, risk_col = st.columns([2.5, 1])
     
@@ -799,7 +822,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 st.info("Insufficient data for chart")
     else:
         st.info("No forecast data available")
-
 # ============================================================================
 # STREAMLIT APP CONFIGURATION
 # ============================================================================
