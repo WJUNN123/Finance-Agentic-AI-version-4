@@ -10,6 +10,7 @@ import logging
 import yaml
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 import uuid
@@ -286,7 +287,7 @@ def parse_user_message(message: str) -> Dict:
 # CORE ANALYSIS FUNCTION
 # ============================================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def analyze_cryptocurrency(
     coin_id: str,
     horizon_days: int = 7
@@ -314,7 +315,7 @@ def analyze_cryptocurrency(
         Dict with all analysis results or {'error': str} if failed
     
     Cache:
-        Results cached for 5 minutes (ttl=300) to avoid rate limits
+        Results cached for 10 minutes (ttl=600) to avoid rate limits
         and improve app responsiveness
     
     Note:
@@ -446,9 +447,12 @@ def analyze_cryptocurrency(
             })
         
         # ====================================================================
-        # 6. GENERATE AI INSIGHTS
+        # 6. GENERATE AI INSIGHTS - WITH RATE LIMITING
         # ====================================================================
         logger.info("Generating AI insights...")
+        
+        # Rate limiting: Wait before Gemini API call (free tier: 5 RPM)
+        time.sleep(3)
         
         if API_KEYS.get('gemini'):
             try:
@@ -484,6 +488,9 @@ def analyze_cryptocurrency(
                 'insight': 'Gemini API key not configured',
                 'source': 'no_api_key'
             }
+        
+        # Rate limiting: Wait after Gemini API call
+        time.sleep(2)
         
         # ====================================================================
         # 7. COMPILE RESULTS
@@ -778,7 +785,7 @@ def main():
         Try:
         - "Bitcoin forecast"
         - "Should I buy Ethereum?"
-        - "BTC 14-day prediction"
+        - "BTC 14-day
         - "Is Solana trending?"
         """)
 
