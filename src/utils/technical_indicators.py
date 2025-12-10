@@ -5,10 +5,11 @@ Calculate various technical indicators for crypto analysis
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
     """
@@ -22,7 +23,7 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
         Current RSI value
     """
     if len(prices) < period + 1:
-        return 50.0
+        return 50.0  # Neutral default
         
     delta = prices.diff()
     gains = delta.clip(lower=0)
@@ -35,6 +36,7 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> float:
     rsi = 100 - (100 / (1 + rs))
     
     return float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 50.0
+
 
 def calculate_rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
     """Calculate RSI series for entire price history"""
@@ -53,104 +55,220 @@ def calculate_rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
     
     return rsi.fillna(50)
 
-def calculate_bollinger_bands(prices: pd.Series, period: int = 20, num_std: float = 2.0) -> Tuple[float, float, float]:
+
+def calculate_moving_averages(
+    prices: pd.Series,
+    periods: list = [7, 14, 30]
+) -> dict:
     """
-    Calculate Upper, Middle, and Lower Bollinger Bands
+    Calculate multiple moving averages
     
+    Args:
+        prices: Price series
+        periods: List of MA periods
+        
     Returns:
-        Tuple of (Upper Band, Middle Band, Lower Band)
+        Dictionary with MA values
     """
-    if len(prices) < period:
-        val = float(prices.iloc[-1])
-        return val * 1.05, val, val * 0.95
-        
-    ma = prices.rolling(window=period).mean()
-    std = prices.rolling(window=period).std()
-    
-    upper = ma + (std * num_std)
-    lower = ma - (std * num_std)
-    
-    return float(upper.iloc[-1]), float(ma.iloc[-1]), float(lower.iloc[-1])
-
-def calculate_roc(prices: pd.Series, period: int = 9) -> float:
-    """
-    Calculate Rate of Change (Percentage change over n periods)
-    """
-    if len(prices) < period:
-        return 0.0
-    return float(((prices.iloc[-1] - prices.iloc[-period]) / prices.iloc[-period]) * 100)
-
-def calculate_volatility(prices: pd.Series, window: int = 30) -> float:
-    """
-    Calculate Annualized volatility
-    """
-    returns = np.log(prices / prices.shift(1))
-    return float(returns.rolling(window=window).std().iloc[-1] * np.sqrt(365)) * 100
-
-def identify_trend(prices: pd.Series, short_window: int = 20, long_window: int = 50) -> str:
-    """
-    Identify trend based on Moving Average crossovers
-    """
-    if len(prices) < long_window:
-        return "neutral"
-        
-    short_ma = prices.rolling(window=short_window).mean().iloc[-1]
-    long_ma = prices.rolling(window=long_window).mean().iloc[-1]
-    
-    if short_ma > long_ma * 1.01: 
-        return "uptrend"
-    if short_ma < long_ma * 0.99: 
-        return "downtrend"
-    return "neutral"
-
-def calculate_moving_averages(prices: pd.Series, periods: list = [7, 14, 30]) -> dict:
-    """Calculate multiple moving averages"""
     mas = {}
     for period in periods:
         if len(prices) >= period:
-            mas[f'ma{period}'] = float(prices.rolling(period).mean().iloc[-1])
+            ma = prices.rolling(period, min_periods=1).mean()
+            mas[f'ma{period}'] = float(ma.iloc[-1])
         else:
             mas[f'ma{period}'] = float(prices.iloc[-1])
+            
     return mas
 
-def get_support_resistance(prices: pd.Series, window: int = 20) -> Tuple[float, float]:
-    """Identify support and resistance levels"""
-    if len(prices) < window:
-        current = float(prices.iloc[-1])
-        return current * 0.95, current * 1.05
-    
-    recent = prices.tail(window)
-    return float(recent.min()), float(recent.max())
 
-def get_all_indicators(prices: pd.Series, pct_24h: float = 0.0, pct_7d: float = 0.0) -> Dict:
+def calculate_volatility(
+    prices: pd.Series,
+    method: str = 'ewma',
+    span: int = 20
+) -> float:
     """
-    Calculate all technical indicators including enhanced metrics for the Risk Engine
+    Calculate price volatility
+    
+    Args:
+        prices: Price series
+        method: 'ewma' or 'std'
+        span: Window size for calculation
+        
+    Returns:
+        Volatility value
     """
-    bb_upper, bb_mid, bb_lower = calculate_bollinger_bands(prices)
-    current_price = float(prices.iloc[-1])
+    if len(prices) < 2:
+        return 0.0
+        
+    # Calculate log returns
+    log_returns = np.log(prices).diff().dropna()
     
-    # BB Position (0 = lower band, 1 = upper band)
-    bb_range = bb_upper - bb_lower
-    bb_position = (current_price - bb_lower) / bb_range if bb_range > 0 else 0.5
+    if len(log_returns) < 2:
+        return 0.0
+        
+    if method == 'ewma':
+        vol = log_returns.ewm(span=span, adjust=False).std().iloc[-1]
+    else:
+        vol = log_returns.std()
+        
+    return float(vol) if not np.isnan(vol) else 0.0
+
+
+def calculate_momentum(
+    prices: pd.Series,
+    period: int = 14
+) -> float:
+    """
+    Calculate price momentum
     
-    # Base indicators
+    Args:
+        prices: Price series
+        period: Lookback period
+        
+    Returns:
+        Momentum as percentage change
+    """
+    if len(prices) < period + 1:
+        return 0.0
+        
+    momentum = ((prices.iloc[-1] - prices.iloc[-period-1]) / 
+                prices.iloc[-period-1]) * 100
+    
+    return float(momentum) if not np.isnan(momentum) else 0.0
+
+
+def get_support_resistance(
+    prices: pd.Series,
+    window: int = 20
+) -> Tuple[float, float]:
+    """
+    Identify support and resistance levels
+    
+    Args:
+        prices: Price series
+        window: Window for finding local extrema
+        
+    Returns:
+        Tuple of (support, resistance) levels
+    """
+    if len(prices) < window:
+        current_price = float(prices.iloc[-1])
+        return current_price * 0.95, current_price * 1.05
+        
+    recent_prices = prices.tail(window)
+    support = float(recent_prices.min())
+    resistance = float(recent_prices.max())
+    
+    return support, resistance
+
+
+def identify_trend(
+    prices: pd.Series,
+    short_window: int = 7,
+    long_window: int = 30
+) -> str:
+    """
+    Identify price trend using moving averages
+    
+    Args:
+        prices: Price series
+        short_window: Short MA period
+        long_window: Long MA period
+        
+    Returns:
+        'uptrend', 'downtrend', or 'sideways'
+    """
+    if len(prices) < long_window:
+        return "insufficient_data"
+        
+    ma_short = prices.rolling(short_window).mean().iloc[-1]
+    ma_long = prices.rolling(long_window).mean().iloc[-1]
+    
+    diff_pct = ((ma_short - ma_long) / ma_long) * 100
+    
+    if diff_pct > 2:
+        return "uptrend"
+    elif diff_pct < -2:
+        return "downtrend"
+    else:
+        return "sideways"
+
+
+def calculate_bollinger_bands(
+    prices: pd.Series,
+    period: int = 20,
+    num_std: float = 2.0
+) -> Tuple[float, float, float]:
+    """
+    Calculate Bollinger Bands
+    
+    Args:
+        prices: Price series
+        period: MA period
+        num_std: Number of standard deviations
+        
+    Returns:
+        Tuple of (upper_band, middle_band, lower_band)
+    """
+    if len(prices) < period:
+        current = float(prices.iloc[-1])
+        return current * 1.05, current, current * 0.95
+        
+    ma = prices.rolling(period).mean()
+    std = prices.rolling(period).std()
+    
+    upper = ma + (num_std * std)
+    lower = ma - (num_std * std)
+    
+    return (
+        float(upper.iloc[-1]),
+        float(ma.iloc[-1]),
+        float(lower.iloc[-1])
+    )
+
+
+def get_all_indicators(
+    prices: pd.Series,
+    pct_24h: Optional[float] = None,
+    pct_7d: Optional[float] = None
+) -> dict:
+    """
+    Calculate all technical indicators at once
+    
+    Args:
+        prices: Price series
+        pct_24h: Optional 24h percentage change
+        pct_7d: Optional 7d percentage change
+        
+    Returns:
+        Dictionary with all indicators
+    """
     indicators = {
         'rsi': calculate_rsi(prices),
         'volatility': calculate_volatility(prices),
-        'roc': calculate_roc(prices),
-        'trend': identify_trend(prices),
-        'bb_upper': bb_upper,
-        'bb_middle': bb_mid,
-        'bb_lower': bb_lower,
-        'bb_position': bb_position
+        'momentum': calculate_momentum(prices),
+        'trend': identify_trend(prices)
     }
     
-    # Add Moving Averages
-    indicators.update(calculate_moving_averages(prices))
+    # Moving averages
+    mas = calculate_moving_averages(prices)
+    indicators.update(mas)
     
-    # Add Support/Resistance
-    sup, res = get_support_resistance(prices)
-    indicators['support'] = sup
-    indicators['resistance'] = res
+    # Support/Resistance
+    support, resistance = get_support_resistance(prices)
+    indicators['support'] = support
+    indicators['resistance'] = resistance
     
+    # Bollinger Bands
+    bb_upper, bb_middle, bb_lower = calculate_bollinger_bands(prices)
+    indicators['bb_upper'] = bb_upper
+    indicators['bb_middle'] = bb_middle
+    indicators['bb_lower'] = bb_lower
+    
+    # Add price changes if provided
+    if pct_24h is not None:
+        indicators['pct_24h'] = pct_24h
+    if pct_7d is not None:
+        indicators['pct_7d'] = pct_7d
+        
     return indicators
