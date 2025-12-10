@@ -8,19 +8,19 @@ from typing import Dict, List, Optional
 import logging
 import re
 import json
-import time  # <--- Added for retry logic
+import time
 
 logger = logging.getLogger(__name__)
 
 class GeminiInsightGenerator:
-    """Generates investment insights using Gemini 2.0 Flash"""
+    """Generates investment insights using Gemini 1.5 Flash"""
     
     def __init__(
         self,
         api_key: str,
-        model_name: str = "gemini-2.0-flash",
+        model_name: str = "gemini-1.5-flash",  # <--- CHANGED: Switched to 1.5 Flash
         temperature: float = 0.3,
-        max_tokens: int = 500 # <--- Reduced from 1000 to save tokens
+        max_tokens: int = 500
     ):
         self.model_name = model_name
         self.temperature = temperature
@@ -47,7 +47,7 @@ class GeminiInsightGenerator:
         Generate comprehensive investment insights with consistent recommendations
         Includes Retry Logic for 429 Rate Limits
         """
-        # 1. Build optimized prompt (Tokens Reduced)
+        # 1. Build optimized prompt
         prompt = self._build_prompt(
             coin_symbol=coin_symbol,
             market_data=market_data,
@@ -58,9 +58,9 @@ class GeminiInsightGenerator:
             horizon=horizon_days
         )
         
-        # 2. Retry Logic Configuration
+        # 2. Retry Logic
         max_retries = 3
-        base_wait = 60  # Wait 60s if limit hit (safe buffer for the 48s in your logs)
+        base_wait = 60
 
         for attempt in range(max_retries):
             try:
@@ -69,7 +69,7 @@ class GeminiInsightGenerator:
                     max_output_tokens=self.max_tokens
                 )
                 
-                logger.info(f"Sending request to Gemini (Attempt {attempt + 1}/{max_retries})...")
+                logger.info(f"Sending request to {self.model_name} (Attempt {attempt + 1}/{max_retries})...")
                 response = self.model.generate_content(prompt, generation_config=config)
                 response_text = response.text.strip()
                 
@@ -98,6 +98,7 @@ class GeminiInsightGenerator:
                     continue
                 
                 logger.error(f"Error generating insights: {e}")
+                # If 1.5 Flash also fails, return fallback immediately
                 return self._get_fallback_response()
         
         return self._get_fallback_response()
@@ -125,7 +126,6 @@ class GeminiInsightGenerator:
         # Limit headlines to just 2 to save tokens
         headlines_text = " | ".join(headlines[:2]) if headlines else "None"
 
-        # COMPRESSED PROMPT (~200 tokens)
         return f"""Act as Crypto Analyst.
 Coin: {coin_symbol}
 Price: ${curr_price:,.2f}
@@ -169,7 +169,6 @@ Task: Return valid JSON.
         else: rec = "HOLD"
         
         score = parsed.get("confidence_score", 0.5)
-        # Handle string percentages if model hallucinates them
         if isinstance(score, str):
             score = float(score.replace('%', '')) / 100
             
