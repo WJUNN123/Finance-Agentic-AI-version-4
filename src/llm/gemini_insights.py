@@ -8,9 +8,9 @@ from typing import Dict, List, Optional
 import logging
 import re
 import json
+import time  # <--- Added for retry logic
 
 logger = logging.getLogger(__name__)
-
 
 class GeminiInsightGenerator:
     """Generates investment insights using Gemini 2.0 Flash"""
@@ -20,7 +20,7 @@ class GeminiInsightGenerator:
         api_key: str,
         model_name: str = "gemini-2.0-flash",
         temperature: float = 0.3,
-        max_tokens: int = 500
+        max_tokens: int = 500 # <--- Reduced from 1000 to save tokens
     ):
         self.model_name = model_name
         self.temperature = temperature
@@ -44,162 +44,167 @@ class GeminiInsightGenerator:
         horizon_days: int = 7
     ) -> Dict:
         """
-        Generate investment insights with minimal token usage.
-        Optimized for free tier quotas.
+        Generate comprehensive investment insights with consistent recommendations
+        Includes Retry Logic for 429 Rate Limits
         """
-        # Build MINIMAL prompt (reduced from 800 to 200 tokens)
-        prompt = self._build_minimal_prompt(
+        # 1. Build optimized prompt (Tokens Reduced)
+        prompt = self._build_prompt(
             coin_symbol=coin_symbol,
             market_data=market_data,
             sentiment_data=sentiment_data,
-            technical=technical_indicators,
-            predictions=prediction_data,
+            tech=technical_indicators,
+            preds=prediction_data,
+            headlines=top_headlines,
             horizon=horizon_days
         )
         
-        try:
-            config = genai.types.GenerationConfig(
-                temperature=self.temperature,
-                max_output_tokens=self.max_tokens
-            )
-            
-            response = self.model.generate_content(prompt, generation_config=config)
-            response_text = response.text.strip()
-            
-            # Parse structured JSON response
-            parsed = self._parse_json_response(response_text)
-            
-            if parsed:
-                return {
-                    "recommendation": parsed.get("recommendation", "HOLD / WAIT"),
-                    "score": parsed.get("confidence_score", 0.5),
-                    "insight": parsed.get("analysis", ""),
-                    "source": "gemini",
-                    "model": self.model_name
-                }
-            else:
-                logger.warning("Failed to parse JSON response, using fallback extraction")
-                return self._fallback_parse(response_text)
-            
-        except Exception as e:
-            logger.error(f"Error generating insights: {e}")
-            return self._get_fallback_response()
+        # 2. Retry Logic Configuration
+        max_retries = 3
+        base_wait = 60  # Wait 60s if limit hit (safe buffer for the 48s in your logs)
 
-    def _build_minimal_prompt(self, coin_symbol, market_data, sentiment_data, technical, predictions, horizon):
-        """
-        Build MINIMAL prompt to reduce token usage.
+        for attempt in range(max_retries):
+            try:
+                config = genai.types.GenerationConfig(
+                    temperature=self.temperature,
+                    max_output_tokens=self.max_tokens
+                )
+                
+                logger.info(f"Sending request to Gemini (Attempt {attempt + 1}/{max_retries})...")
+                response = self.model.generate_content(prompt, generation_config=config)
+                response_text = response.text.strip()
+                
+                # Parse structured JSON response
+                parsed = self._parse_json_response(response_text)
+                
+                if parsed:
+                    return {
+                        "recommendation": parsed.get("recommendation", "HOLD / WAIT"),
+                        "score": parsed.get("confidence_score", 0.5),
+                        "insight": parsed.get("analysis", ""),
+                        "risks": parsed.get("risks", []),
+                        "source": "gemini",
+                        "model": self.model_name
+                    }
+                else:
+                    logger.warning("Failed to parse JSON response, using fallback extraction")
+                    return self._fallback_parse(response_text)
+            
+            except Exception as e:
+                error_str = str(e)
+                # Check for Rate Limit (429) or Quota issues
+                if ("429" in error_str or "quota" in error_str.lower()) and attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Quota exceeded. Retrying in {base_wait} seconds...")
+                    time.sleep(base_wait)
+                    continue
+                
+                logger.error(f"Error generating insights: {e}")
+                return self._get_fallback_response()
         
-        Original: 800+ tokens
-        Optimized: ~200 tokens
+        return self._get_fallback_response()
+
+    def _build_prompt(self, coin_symbol, market_data, sentiment_data, tech, preds, headlines, horizon):
         """
-        
+        Constructs a HIGHLY OPTIMIZED prompt to minimize token usage.
+        """
         curr_price = market_data.get('price_usd', 0)
         
-        # Minimal prediction text
-        pred_text = "Unknown"
-        if predictions and predictions.get('ensemble') and len(predictions['ensemble']) > 0:
-            final_pred = predictions['ensemble'][-1]
-            pred_roi = ((final_pred - curr_price) / curr_price) * 100
-            pred_text = f"${final_pred:,.0f} ({pred_roi:+.1f}%)"
-        
-        # Minimal sentiment
+        # Simplified Predictions
+        pred_text = "None"
+        if preds and preds.get('ensemble') and len(preds['ensemble']) > 0:
+            final = preds['ensemble'][-1]
+            roi = ((final - curr_price) / curr_price) * 100
+            pred_text = f"${final:,.2f} ({roi:+.1f}%)"
+
+        # Simplified Sentiment
         sent_score = sentiment_data.get('score', 0)
-        breakdown = sentiment_data.get('breakdown', {})
-        pos = breakdown.get('positive', 0)
         
-        # Minimal technical
-        rsi = technical.get('rsi', 50)
-        trend = technical.get('trend', 'sideways')
-        vol = technical.get('volatility', 0)
-        
-        # COMPACT PROMPT (minimal tokens)
-        return f"""Analyze {coin_symbol}. Give ONE JSON line.
+        # Simplified Technicals
+        rsi = tech.get('rsi', 50)
+        trend = tech.get('trend', 'sideways')
 
-Price: ${curr_price:,.2f}, Prediction: {pred_text}
-RSI: {rsi:.0f}, Trend: {trend}, Vol: {vol:.3f}
-Sentiment: {sent_score:.2f} ({pos:.0f}% positive)
+        # Limit headlines to just 2 to save tokens
+        headlines_text = " | ".join(headlines[:2]) if headlines else "None"
 
-Return ONLY:
-{{"recommendation":"BUY"|"SELL"|"HOLD","confidence_score":0.0-1.0,"analysis":"1 sentence"}}"""
+        # COMPRESSED PROMPT (~200 tokens)
+        return f"""Act as Crypto Analyst.
+Coin: {coin_symbol}
+Price: ${curr_price:,.2f}
+Forecast({horizon}d): {pred_text}
+Sentiment: {sent_score:.2f} (-1 to 1)
+RSI: {rsi:.1f}
+Trend: {trend}
+News: {headlines_text}
+
+Task: Return valid JSON.
+{{
+"recommendation": "BUY"|"SELL"|"HOLD",
+"confidence_score": 0.0-1.0,
+"analysis": "Short 2 sentence summary.",
+"risks": ["Risk 1", "Risk 2"]
+}}"""
 
     def _parse_json_response(self, response_text: str) -> Optional[Dict]:
         """Extract and parse JSON from response"""
         try:
-            # Try direct JSON parsing
-            parsed = json.loads(response_text)
+            # Clean markdown code blocks if present
+            text = response_text.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(text)
             return self._validate_parsed_response(parsed)
         except json.JSONDecodeError:
-            # Try to extract JSON from text
-            json_match = re.search(r'\{[^{}]*"recommendation"[^{}]*\}', response_text, re.DOTALL)
+            # Regex fallback
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group())
                     return self._validate_parsed_response(parsed)
                 except:
                     pass
-        
         return None
 
     def _validate_parsed_response(self, parsed: Dict) -> Dict:
         """Validate and normalize parsed response"""
-        rec = parsed.get("recommendation", "HOLD").upper().strip()
-        if "BUY" in rec:
-            rec = "BUY"
-        elif "SELL" in rec:
-            rec = "SELL"
-        else:
-            rec = "HOLD"
+        rec = parsed.get("recommendation", "HOLD").upper()
+        if "BUY" in rec: rec = "BUY"
+        elif "SELL" in rec: rec = "SELL"
+        else: rec = "HOLD"
         
         score = parsed.get("confidence_score", 0.5)
+        # Handle string percentages if model hallucinates them
         if isinstance(score, str):
-            score = float(score.replace('%', '')) / 100.0
-        score = max(0.0, min(1.0, float(score)))
-        
-        analysis = parsed.get("analysis", "")
-        if not analysis:
-            analysis = parsed.get("reasoning", "")
-        
+            score = float(score.replace('%', '')) / 100
+            
         return {
             "recommendation": rec,
-            "confidence_score": score,
-            "analysis": analysis
+            "confidence_score": float(score),
+            "analysis": parsed.get("analysis", parsed.get("reasoning", "")),
+            "risks": parsed.get("risks", [])
         }
 
     def _fallback_parse(self, text: str) -> Dict:
         """Fallback parsing if JSON extraction fails"""
-        logger.warning("Using fallback text parsing")
-        
         rec = "HOLD"
-        if re.search(r'\bBUY\b', text, re.IGNORECASE):
-            rec = "BUY"
-        elif re.search(r'\bSELL\b', text, re.IGNORECASE):
-            rec = "SELL"
-        
-        score = 0.5
-        score_match = re.search(r'(?:confidence|score)[:\s]+(\d+)', text, re.IGNORECASE)
-        if score_match:
-            score = int(score_match.group(1)) / 100.0
+        if "BUY" in text.upper(): rec = "BUY"
+        elif "SELL" in text.upper(): rec = "SELL"
         
         return {
             "recommendation": rec,
-            "score": score,
+            "score": 0.5,
             "insight": text[:300],
+            "risks": [],
             "source": "gemini",
             "model": self.model_name
         }
 
     def _get_fallback_response(self) -> Dict:
-        """Return fallback response on error"""
         return {
             "recommendation": "HOLD",
             "score": 0.5,
-            "insight": "Unable to generate insights. Please try again.",
+            "insight": "AI Insights unavailable (Rate Limit/Error).",
+            "risks": ["API Limit Reached"],
             "source": "fallback",
             "model": self.model_name
         }
 
-
 def generate_insights(api_key: str, **kwargs) -> Dict:
-    """Convenient function to generate insights"""
     generator = GeminiInsightGenerator(api_key=api_key)
     return generator.generate_insights(**kwargs)
