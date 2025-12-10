@@ -5,16 +5,15 @@ Combines LSTM and XGBoost for cryptocurrency price forecasting
 
 import numpy as np
 import pandas as pd
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 import logging
 
 # ML imports
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 import xgboost as xgb
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers, callbacks
+from tensorflow.keras import layers
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +30,6 @@ class HybridPredictor:
     ):
         """
         Initialize hybrid predictor
-        
-        Args:
-            window_size: Number of days to use for prediction
-            lstm_units: List of LSTM layer units
-            dropout_rates: Dropout rates for each LSTM layer
-            xgb_params: XGBoost parameters
         """
         self.window_size = window_size
         self.lstm_units = lstm_units
@@ -55,18 +48,11 @@ class HybridPredictor:
         self.lstm_model = None
         self.xgb_model = None
         self.feature_scaler = None
-        self.price_scaler = None
+        # We need a dedicated scaler for price to inverse transform predictions
+        self.price_scaler = MinMaxScaler() 
         
     def prepare_features(self, price_series: pd.Series) -> pd.DataFrame:
-        """
-        Prepare features from price series
-        
-        Args:
-            price_series: Pandas Series of prices
-            
-        Returns:
-            DataFrame with engineered features
-        """
+        """Prepare features from price series"""
         df = pd.DataFrame({'price': price_series.astype(float)})
         
         # Log returns
@@ -75,14 +61,17 @@ class HybridPredictor:
         # Moving averages
         df['ma7'] = df['price'].rolling(7, min_periods=1).mean()
         df['ma14'] = df['price'].rolling(14, min_periods=1).mean()
-        df['ma30'] = df['price'].rolling(30, min_periods=1).mean()
         
         # MA distances (normalized)
         df['ma7_dist'] = (df['price'] - df['ma7']) / df['price']
         df['ma14_dist'] = (df['price'] - df['ma14']) / df['price']
         
-        # RSI
-        df['rsi'] = self._calculate_rsi(df['price'], period=14)
+        # RSI (Simple implementation to avoid circular dependency)
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         
         # Volatility
         df['volatility'] = df['returns'].rolling(20, min_periods=1).std()
@@ -90,286 +79,188 @@ class HybridPredictor:
         # Momentum
         df['momentum'] = df['price'].pct_change(periods=14)
         
-        # Volume-like proxy (using price volatility)
-        df['price_range'] = df['price'].rolling(7, min_periods=1).max() - \
-                           df['price'].rolling(7, min_periods=1).min()
-        
         return df.bfill().fillna(0)
-        
-    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate RSI indicator"""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
-        
-    def build_lstm_model(self, input_shape: Tuple[int, int]) -> keras.Model:
-        """Build LSTM neural network"""
-        model = keras.Sequential()
-        
-        # Add LSTM layers
-        for i, (units, dropout) in enumerate(zip(self.lstm_units, self.dropout_rates)):
-            return_sequences = i < len(self.lstm_units) - 1
-            
-            model.add(layers.LSTM(
-                units,
-                input_shape=input_shape if i == 0 else None,
-                return_sequences=return_sequences
-            ))
-            model.add(layers.Dropout(dropout))
-            
-        # Output layer
-        model.add(layers.Dense(1, activation='linear'))
-        
-        # Compile
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
-            loss='mse',
-            metrics=['mae']
-        )
-        
-        return model
-        
-    def train_lstm(
-        self,
-        price_series: pd.Series,
-        epochs: int = 20,
-        batch_size: int = 16,
-        validation_split: float = 0.1
-    ) -> dict:
-        """
-        Train LSTM model
-        
-        Args:
-            price_series: Historical prices
-            epochs: Training epochs
-            batch_size: Batch size
-            validation_split: Validation split ratio
-            
-        Returns:
-            Training history
-        """
+
+    def train_lstm(self, price_series: pd.Series, epochs: int = 15, batch_size: int = 16):
+        """Train LSTM model"""
         logger.info("Training LSTM model...")
-        
-        # Prepare features
         df = self.prepare_features(price_series)
         
-        # Select features for LSTM
-        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 
-                       'volatility', 'momentum']
-        features = df[feature_cols].values
-        
-        # Target: next day's return
-        target = df['returns'].shift(-1).fillna(0).values
+        # Features to use
+        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 'volatility', 'momentum']
+        data = df[feature_cols].values
         
         # Scale features
         self.feature_scaler = MinMaxScaler()
-        features_scaled = self.feature_scaler.fit_transform(features)
+        data_scaled = self.feature_scaler.fit_transform(data)
+        
+        # Prepare Price Scaler for later inversion (fitting on price directly)
+        self.price_scaler.fit(df[['price']])
         
         # Create sequences
         X, y = [], []
-        for i in range(self.window_size, len(features_scaled)):
-            X.append(features_scaled[i-self.window_size:i])
+        # Target is next day's return
+        target = df['returns'].shift(-1).fillna(0).values
+        
+        for i in range(self.window_size, len(data_scaled)):
+            X.append(data_scaled[i-self.window_size:i])
             y.append(target[i])
             
-        X = np.array(X)
-        y = np.array(y)
+        X, y = np.array(X), np.array(y)
         
-        # Split data
-        split_idx = int(len(X) * (1 - validation_split))
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
+        # Build Model
+        model = keras.Sequential()
+        model.add(layers.LSTM(self.lstm_units[0], return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
+        model.add(layers.Dropout(self.dropout_rates[0]))
+        model.add(layers.LSTM(self.lstm_units[1], return_sequences=False))
+        model.add(layers.Dropout(self.dropout_rates[1]))
+        model.add(layers.Dense(1))
         
-        # Build and train model
-        self.lstm_model = self.build_lstm_model((self.window_size, X.shape[2]))
-        
-        early_stop = callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True
-        )
-        
-        history = self.lstm_model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=[early_stop],
-            verbose=0
-        )
-        
-        logger.info(f"LSTM training complete. Final loss: {history.history['loss'][-1]:.6f}")
-        
-        return history.history
-        
-    def train_xgboost(self, price_series: pd.Series) -> dict:
-        """
-        Train XGBoost model
-        
-        Args:
-            price_series: Historical prices
-            
-        Returns:
-            Model metrics
-        """
+        model.compile(optimizer='adam', loss='mse')
+        model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=0)
+        self.lstm_model = model
+
+    def train_xgboost(self, price_series: pd.Series):
+        """Train XGBoost model"""
         logger.info("Training XGBoost model...")
-        
-        # Prepare features
         df = self.prepare_features(price_series)
         
-        # Use all features
-        feature_cols = [col for col in df.columns if col not in ['price', 'returns']]
-        X = df[feature_cols].values[:-1]  # Exclude last row (no target)
-        y = df['returns'].shift(-1).dropna().values
+        # Features
+        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 'volatility', 'momentum']
+        X = df[feature_cols].values
+        # Target: next day return
+        y = df['returns'].shift(-1).fillna(0).values
         
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.1, shuffle=False
-        )
+        # Remove last row (no target)
+        X = X[:-1]
+        y = y[:-1]
         
-        # Train model
         self.xgb_model = xgb.XGBRegressor(**self.xgb_params)
-        self.xgb_model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
-            verbose=False
-        )
-        
-        # Calculate metrics
-        train_score = self.xgb_model.score(X_train, y_train)
-        test_score = self.xgb_model.score(X_test, y_test)
-        
-        logger.info(f"XGBoost training complete. Train R²: {train_score:.4f}, Test R²: {test_score:.4f}")
-        
-        return {
-            'train_score': train_score,
-            'test_score': test_score
-        }
-        
-    def predict_lstm(
-        self,
-        price_series: pd.Series,
-        horizon: int = 7
-    ) -> List[float]:
-        """Predict future prices using LSTM"""
-        if self.lstm_model is None:
-            raise ValueError("LSTM model not trained. Call train_lstm() first.")
-            
+        self.xgb_model.fit(X, y)
+
+    def predict_lstm(self, price_series: pd.Series, horizon: int) -> List[float]:
+        """Generate LSTM predictions"""
         df = self.prepare_features(price_series)
-        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 
-                       'volatility', 'momentum']
-        features = df[feature_cols].values
-        features_scaled = self.feature_scaler.transform(features)
+        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 'volatility', 'momentum']
         
-        # Start with last window
-        current_window = features_scaled[-self.window_size:]
-        predictions = []
+        # Initial sequence
+        last_sequence = df[feature_cols].iloc[-self.window_size:].values
+        last_sequence_scaled = self.feature_scaler.transform(last_sequence)
+        current_seq = last_sequence_scaled.reshape(1, self.window_size, len(feature_cols))
+        
         current_price = float(price_series.iloc[-1])
+        predictions = []
         
         for _ in range(horizon):
-            # Predict next return
-            X = current_window.reshape(1, self.window_size, -1)
-            next_return = self.lstm_model.predict(X, verbose=0)[0, 0]
-            
-            # Convert return to price
-            next_price = current_price * np.exp(next_return)
-            predictions.append(float(next_price))
-            
-            # Update window (simplified - just repeat last features with new return)
-            new_features = current_window[-1].copy()
-            new_features[0] = next_return  # Update return
-            current_window = np.vstack([current_window[1:], new_features])
-            current_price = next_price
-            
-        return predictions
-        
-    def predict_xgboost(
-        self,
-        price_series: pd.Series,
-        horizon: int = 7
-    ) -> List[float]:
-        """Predict future prices using XGBoost"""
-        if self.xgb_model is None:
-            raise ValueError("XGBoost model not trained. Call train_xgboost() first.")
-            
-        df = self.prepare_features(price_series)
-        feature_cols = [col for col in df.columns if col not in ['price', 'returns']]
-        
-        predictions = []
-        current_price = float(price_series.iloc[-1])
-        current_features = df[feature_cols].iloc[-1:].values
-        
-        for _ in range(horizon):
-            # Predict next return
-            next_return = self.xgb_model.predict(current_features)[0]
+            # Predict log return
+            pred_return = self.lstm_model.predict(current_seq, verbose=0)[0][0]
             
             # Convert to price
-            next_price = current_price * np.exp(next_return)
-            predictions.append(float(next_price))
+            next_price = current_price * np.exp(pred_return)
+            predictions.append(next_price)
             
-            # Update features (simplified)
+            # Update sequence (simplified: roll and append new return, keep other features static/last known)
+            # In a real PRO system, you'd re-calculate technicals based on new price. 
+            # For speed, we just update the return feature.
+            new_step = current_seq[0, -1, :].copy()
+            new_step[0] = pred_return # Update returns column
+            
+            current_seq = np.roll(current_seq, -1, axis=1)
+            current_seq[0, -1, :] = new_step
             current_price = next_price
             
         return predictions
+
+    def predict_xgboost(self, price_series: pd.Series, horizon: int) -> List[float]:
+        """Generate XGBoost predictions"""
+        df = self.prepare_features(price_series)
+        feature_cols = ['returns', 'ma7_dist', 'ma14_dist', 'rsi', 'volatility', 'momentum']
         
-    def predict_ensemble(
-        self,
-        price_series: pd.Series,
-        horizon: int = 7,
-        lstm_weight: float = 0.7,
-        xgb_weight: float = 0.3
-    ) -> List[float]:
-        """
-        Generate ensemble prediction combining LSTM and XGBoost
+        last_row = df[feature_cols].iloc[-1:].values
+        current_price = float(price_series.iloc[-1])
+        predictions = []
         
-        Args:
-            price_series: Historical prices
-            horizon: Days to forecast
-            lstm_weight: Weight for LSTM predictions
-            xgb_weight: Weight for XGBoost predictions
+        for _ in range(horizon):
+            pred_return = self.xgb_model.predict(last_row)[0]
+            next_price = current_price * np.exp(pred_return)
+            predictions.append(next_price)
             
-        Returns:
-            List of predicted prices
+            # Simple update
+            last_row[0, 0] = pred_return
+            current_price = next_price
+            
+        return predictions
+
+    def predict_ensemble(
+        self, 
+        price_series: pd.Series, 
+        horizon: int = 7, 
+        lstm_weight: float = 0.7, 
+        xgb_weight: float = 0.3
+    ) -> Dict:
         """
-        logger.info(f"Generating {horizon}-day ensemble forecast...")
+        Generate ensemble forecast with Confidence Intervals
+        """
+        logger.info(f"Generating {horizon}-day ensemble forecast with CI...")
         
-        # Get predictions from both models
-        lstm_preds = self.predict_lstm(price_series, horizon)
-        xgb_preds = self.predict_xgboost(price_series, horizon)
+        lstm_preds = np.array(self.predict_lstm(price_series, horizon))
+        xgb_preds = np.array(self.predict_xgboost(price_series, horizon))
         
-        # Combine predictions
-        ensemble = [
-            lstm_weight * lstm + xgb_weight * xgb
-            for lstm, xgb in zip(lstm_preds, xgb_preds)
-        ]
+        # Weighted Ensemble
+        ensemble_mean = (lstm_preds * lstm_weight) + (xgb_preds * xgb_weight)
         
-        logger.info("Ensemble forecast complete")
-        return ensemble
+        # Calculate Disagreement (Model Uncertainty)
+        # We use the absolute difference between models as a proxy for uncertainty
+        model_disagreement = np.abs(lstm_preds - xgb_preds)
+        
+        # Base volatility factor from recent history (last 30 days)
+        recent_vol = price_series.pct_change().std()
+        if np.isnan(recent_vol): recent_vol = 0.02
+        
+        # Construct CI: Widens with time and model disagreement
+        lower_bound = []
+        upper_bound = []
+        
+        for i, price in enumerate(ensemble_mean):
+            # Uncertainty grows with sqrt of time (t)
+            # Factor 1.96 is for 95% CI roughly
+            time_factor = np.sqrt(i + 1)
+            
+            # Combine historical volatility and model disagreement
+            sigma = (recent_vol * time_factor * price) + (model_disagreement[i] * 0.5)
+            
+            lower_bound.append(float(price - (1.96 * sigma)))
+            upper_bound.append(float(price + (1.96 * sigma)))
+            
+        return {
+            "mean": ensemble_mean.tolist(),
+            "lower": lower_bound,
+            "upper": upper_bound,
+            "disagreement_index": float(np.mean(model_disagreement) / np.mean(ensemble_mean)),
+            "lstm_preds": lstm_preds.tolist(),
+            "xgb_preds": xgb_preds.tolist()
+        }
 
 
-# Convenience function
-def train_and_predict(
-    price_series: pd.Series,
-    horizon: int = 7,
-    **kwargs
-) -> dict:
+def train_and_predict(price_series: pd.Series, horizon: int = 7, **kwargs) -> dict:
     """
     Train models and generate predictions in one call
-    
-    Returns:
-        Dictionary with lstm_preds, xgb_preds, ensemble_preds
     """
     predictor = HybridPredictor(**kwargs)
-    
-    # Train both models
     predictor.train_lstm(price_series)
     predictor.train_xgboost(price_series)
     
-    # Generate predictions
+    ensemble_data = predictor.predict_ensemble(price_series, horizon)
+    
     return {
-        'lstm': predictor.predict_lstm(price_series, horizon),
-        'xgboost': predictor.predict_xgboost(price_series, horizon),
-        'ensemble': predictor.predict_ensemble(price_series, horizon)
+        'lstm': ensemble_data['lstm_preds'],
+        'xgboost': ensemble_data['xgb_preds'],
+        'ensemble': ensemble_data['mean'],
+        'confidence_intervals': {
+            'lower': ensemble_data['lower'],
+            'upper': ensemble_data['upper']
+        },
+        'risk_metrics': {
+            'model_disagreement': ensemble_data['disagreement_index']
+        }
     }
