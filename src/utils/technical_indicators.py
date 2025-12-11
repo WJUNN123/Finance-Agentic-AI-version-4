@@ -227,6 +227,144 @@ def calculate_bollinger_bands(
     )
 
 
+def calculate_macd(
+    prices: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9
+) -> Tuple[float, float, float]:
+    """
+    Calculate MACD (Moving Average Convergence Divergence)
+    
+    Args:
+        prices: Price series
+        fast: Fast EMA period (default 12)
+        slow: Slow EMA period (default 26)
+        signal: Signal line period (default 9)
+        
+    Returns:
+        Tuple of (macd, signal_line, histogram)
+    """
+    if len(prices) < slow:
+        return 0.0, 0.0, 0.0
+    
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    histogram = macd - signal_line
+    
+    return (
+        float(macd.iloc[-1]) if not np.isnan(macd.iloc[-1]) else 0.0,
+        float(signal_line.iloc[-1]) if not np.isnan(signal_line.iloc[-1]) else 0.0,
+        float(histogram.iloc[-1]) if not np.isnan(histogram.iloc[-1]) else 0.0
+    )
+
+
+def calculate_stochastic(
+    prices: pd.Series,
+    period: int = 14,
+    smooth_k: int = 3
+) -> Tuple[float, float]:
+    """
+    Calculate Stochastic Oscillator
+    
+    Args:
+        prices: Price series
+        period: Lookback period (default 14)
+        smooth_k: Smoothing period for %K (default 3)
+        
+    Returns:
+        Tuple of (%K, %D)
+    """
+    if len(prices) < period:
+        return 50.0, 50.0
+    
+    # For prices only (no separate high/low), use rolling window
+    low_min = prices.rolling(period).min()
+    high_max = prices.rolling(period).max()
+    
+    # Calculate raw %K
+    k_raw = 100 * ((prices - low_min) / (high_max - low_min))
+    
+    # Smooth %K
+    k = k_raw.rolling(smooth_k).mean()
+    
+    # %D is moving average of %K
+    d = k.rolling(3).mean()
+    
+    return (
+        float(k.iloc[-1]) if not np.isnan(k.iloc[-1]) else 50.0,
+        float(d.iloc[-1]) if not np.isnan(d.iloc[-1]) else 50.0
+    )
+
+
+def calculate_atr(
+    prices: pd.Series,
+    period: int = 14
+) -> float:
+    """
+    Calculate Average True Range (ATR) - volatility indicator
+    
+    Args:
+        prices: Price series
+        period: ATR period
+        
+    Returns:
+        ATR value
+    """
+    if len(prices) < period + 1:
+        return 0.0
+    
+    # For single price series, use high-low approximation
+    high = prices.rolling(2).max()
+    low = prices.rolling(2).min()
+    close = prices
+    
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    
+    return float(atr.iloc[-1]) if not np.isnan(atr.iloc[-1]) else 0.0
+
+
+def calculate_obv(
+    prices: pd.Series,
+    volume: pd.Series = None
+) -> float:
+    """
+    Calculate On-Balance Volume (OBV) trend
+    
+    Args:
+        prices: Price series
+        volume: Volume series (if None, uses price changes as proxy)
+        
+    Returns:
+        OBV trend indicator (-1 to 1)
+    """
+    if len(prices) < 2:
+        return 0.0
+    
+    if volume is None:
+        # Use price changes as volume proxy
+        volume = abs(prices.diff())
+    
+    # Calculate OBV
+    obv = (np.sign(prices.diff()) * volume).fillna(0).cumsum()
+    
+    # Return trend (normalized)
+    if len(obv) > 10:
+        recent_trend = obv.iloc[-1] - obv.iloc[-10]
+        max_change = abs(obv.diff()).max()
+        if max_change > 0:
+            return float(np.clip(recent_trend / max_change, -1, 1))
+    
+    return 0.0
+
+
 def get_all_indicators(
     prices: pd.Series,
     pct_24h: Optional[float] = None,
@@ -265,10 +403,31 @@ def get_all_indicators(
     indicators['bb_middle'] = bb_middle
     indicators['bb_lower'] = bb_lower
     
+    # MACD (NEW)
+    macd, macd_signal, macd_hist = calculate_macd(prices)
+    indicators['macd'] = macd
+    indicators['macd_signal'] = macd_signal
+    indicators['macd_histogram'] = macd_hist
+    
+    # Stochastic Oscillator (NEW)
+    stoch_k, stoch_d = calculate_stochastic(prices)
+    indicators['stochastic_k'] = stoch_k
+    indicators['stochastic_d'] = stoch_d
+    
+    # ATR - Average True Range (NEW)
+    indicators['atr'] = calculate_atr(prices)
+    
+    # OBV trend (NEW)
+    indicators['obv_trend'] = calculate_obv(prices)
+    
     # Add price changes if provided
     if pct_24h is not None:
         indicators['pct_24h'] = pct_24h
     if pct_7d is not None:
         indicators['pct_7d'] = pct_7d
+    
+    # Log indicator summary
+    logger.debug(f"📊 Calculated {len(indicators)} technical indicators")
+    logger.debug(f"   RSI: {indicators['rsi']:.1f}, MACD: {indicators['macd_histogram']:.4f}, Stoch: {indicators['stochastic_k']:.1f}")
         
     return indicators
