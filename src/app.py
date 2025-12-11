@@ -10,6 +10,8 @@ import logging
 import yaml
 import os
 import sys
+import time
+import requests
 from pathlib import Path
 from typing import Dict, List, Tuple
 import uuid
@@ -20,12 +22,22 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Import our modules
-from data_fetchers.coingecko import get_fetcher as get_cg_fetcher
-from data_fetchers.news import get_fetcher as get_news_fetcher
-from sentiment.analyzer import get_analyzer
-from models.hybrid_predictor import train_and_predict
-from llm.gemini_insights import generate_insights
-from utils.technical_indicators import get_all_indicators
+# NOTE: Adjust these imports based on your folder structure
+# If files are in same directory, use:
+from coingecko import get_fetcher as get_cg_fetcher
+from news import get_fetcher as get_news_fetcher
+from analyzer import get_analyzer
+from hybrid_predictor import train_and_predict
+from gemini_insights import generate_insights
+from technical_indicators import get_all_indicators
+
+# If files are in nested folders, use:
+# from data_fetchers.coingecko import get_fetcher as get_cg_fetcher
+# from data_fetchers.news import get_fetcher as get_news_fetcher
+# from sentiment.analyzer import get_analyzer
+# from models.hybrid_predictor import train_and_predict
+# from llm.gemini_insights import generate_insights
+# from utils.technical_indicators import get_all_indicators
 
 # Configure logging
 logging.basicConfig(
@@ -184,16 +196,55 @@ def parse_user_message(message: str) -> Dict:
     }
 
 # ============================================================================
-# CORE ANALYSIS FUNCTION
+# STAGE 3: INPUT VALIDATION FUNCTIONS (NEW)
 # ============================================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+def validate_coin_id(coin_id: str) -> Tuple[bool, str]:
+    """
+    Validate coin ID
+    
+    Returns:
+        Tuple of (is_valid, message)
+    """
+    if not coin_id or not isinstance(coin_id, str):
+        return False, "Coin ID must be a non-empty string"
+    
+    valid_coins = [c['id'] for c in COINS]
+    if coin_id not in valid_coins:
+        available = ', '.join([c['symbol'] for c in COINS])
+        return False, f"❌ Unsupported coin: {coin_id}. Available: {available}"
+    
+    return True, "Valid"
+
+def validate_horizon(horizon_days: int) -> Tuple[bool, str]:
+    """
+    Validate forecast horizon
+    
+    Returns:
+        Tuple of (is_valid, message)
+    """
+    if not isinstance(horizon_days, int):
+        return False, "Horizon must be an integer"
+    
+    if horizon_days < 1:
+        return False, "Horizon must be at least 1 day"
+    
+    if horizon_days > 30:
+        return False, "Horizon cannot exceed 30 days (model reliability)"
+    
+    return True, "Valid"
+
+# ============================================================================
+# CORE ANALYSIS FUNCTION (ENHANCED)
+# ============================================================================
+
+@st.cache_data(ttl=600, show_spinner=False)  # STAGE 1: Increased from 300 to 600
 def analyze_cryptocurrency(
     coin_id: str,
     horizon_days: int = 7
 ) -> Dict:
     """
-    Main analysis function that orchestrates all components
+    Main analysis function with validation and better error handling
     
     Args:
         coin_id: CoinGecko coin ID
@@ -204,23 +255,70 @@ def analyze_cryptocurrency(
     """
     logger.info(f"Starting analysis for {coin_id}, horizon={horizon_days}")
     
+    # STAGE 3: Input validation
+    valid_coin, coin_msg = validate_coin_id(coin_id)
+    if not valid_coin:
+        return {
+            'error': coin_msg,
+            'error_type': 'validation',
+            'suggestion': 'Please choose from the available cryptocurrencies above.'
+        }
+    
+    valid_horizon, horizon_msg = validate_horizon(horizon_days)
+    if not valid_horizon:
+        return {
+            'error': horizon_msg,
+            'error_type': 'validation',
+            'suggestion': 'Please use a forecast period between 1-30 days.'
+        }
+    
+    logger.info(f"✅ Validation passed for {coin_id}, horizon={horizon_days}")
+    
     try:
         # Get coin info
         coin_info = next((c for c in COINS if c['id'] == coin_id), None)
         if not coin_info:
-            return {'error': f'Unknown coin: {coin_id}'}
+            return {
+                'error': f'Unknown coin: {coin_id}',
+                'error_type': 'validation',
+                'suggestion': 'Please choose a valid cryptocurrency.'
+            }
         
         coin_symbol = coin_info['symbol']
         
         # ====================================================================
-        # 1. FETCH MARKET DATA
+        # 1. FETCH MARKET DATA (WITH ENHANCED ERROR HANDLING)
         # ====================================================================
         logger.info("Fetching market data...")
         cg_fetcher = get_cg_fetcher()
         
-        market_df = cg_fetcher.get_market_data([coin_id])
-        if market_df.empty:
-            return {'error': f'No market data for {coin_id}'}
+        try:
+            market_df = cg_fetcher.get_market_data([coin_id])
+            if market_df.empty:
+                return {
+                    'error': f'❌ No market data available for {coin_id}',
+                    'suggestion': 'This coin might not be supported yet. Try: Bitcoin, Ethereum, or Solana.',
+                    'error_type': 'data_not_found'
+                }
+        except requests.exceptions.Timeout:
+            return {
+                'error': '⏱️ Request timed out',
+                'suggestion': 'The API is taking too long. Please try again in a moment.',
+                'error_type': 'timeout'
+            }
+        except requests.exceptions.ConnectionError:
+            return {
+                'error': '🌐 Connection error',
+                'suggestion': 'Unable to connect to data provider. Check your internet connection.',
+                'error_type': 'connection'
+            }
+        except Exception as e:
+            logger.error(f"Market data error: {e}", exc_info=True)
+            return {
+                'error': f'❌ Error fetching market data: {str(e)}',
+                'suggestion': 'Please try again. If the problem persists, try a different cryptocurrency.',
+                'error_type': 'api_error'
+            }
         
         market_row = market_df.iloc[0]
         market_data = {
@@ -236,7 +334,11 @@ def analyze_cryptocurrency(
         # Get historical data
         historical_df = cg_fetcher.get_historical_data(coin_id, days=180)
         if historical_df.empty or 'price' not in historical_df.columns:
-            return {'error': 'Insufficient historical data'}
+            return {
+                'error': 'Insufficient historical data',
+                'suggestion': 'This cryptocurrency might not have enough price history.',
+                'error_type': 'data_not_found'
+            }
         
         price_series = historical_df['price']
         
@@ -269,24 +371,27 @@ def analyze_cryptocurrency(
         headlines = [a['title'] for a in articles if a.get('title')]
         
         # ====================================================================
-        # 4. SENTIMENT ANALYSIS
+        # 4. SENTIMENT ANALYSIS (ENHANCED WITH CONFIDENCE)
         # ====================================================================
         logger.info("Analyzing sentiment...")
         sentiment_analyzer = get_analyzer()
         
+        sentiment_confidence = 0.5  # Default
         if headlines:
             sentiment_results = sentiment_analyzer.analyze_texts(headlines)
             sentiment_score, sentiment_df = sentiment_analyzer.calculate_aggregate_sentiment(
-                sentiment_results
+                sentiment_results,
+                use_recency_bias=True  # STAGE 2: Recency weighting
             )
             sentiment_breakdown = sentiment_analyzer.get_sentiment_breakdown(sentiment_results)
+            sentiment_confidence = sentiment_analyzer.get_sentiment_confidence(sentiment_results)  # STAGE 2: Confidence
         else:
             sentiment_score = 0.0
             sentiment_df = pd.DataFrame()
             sentiment_breakdown = {'positive': 0.0, 'neutral': 0.0, 'negative': 0.0}
         
         # ====================================================================
-        # 5. PRICE PREDICTION
+        # 5. PRICE PREDICTION (WITH MODEL CACHING)
         # ====================================================================
         logger.info("Training models and generating forecast...")
         
@@ -294,6 +399,8 @@ def analyze_cryptocurrency(
             predictions = train_and_predict(
                 price_series,
                 horizon=horizon_days,
+                coin_id=coin_id,  # STAGE 1: For caching
+                use_cache=True,   # STAGE 1: Enable caching
                 window_size=CONFIG['models']['lstm']['window_size']
             )
             
@@ -321,33 +428,32 @@ def analyze_cryptocurrency(
             })
         
         # ====================================================================
-        # 6. GENERATE AI INSIGHTS (GEMINI)
+        # 6. GENERATE AI INSIGHTS (GEMINI) WITH CONFIDENCE
         # ====================================================================
         logger.info("Generating AI insights...")
         
         if API_KEYS.get('gemini'):
             try:
-                # 1. Package Prediction Data
+                # Package data with confidence scores (STAGE 2)
                 prediction_data = {
                     'lstm': lstm_preds,
                     'xgboost': xgb_preds,
-                    'ensemble': ensemble_preds # Pass full list for trend analysis
+                    'ensemble': ensemble_preds
                 }
                 
-                # 2. Package Sentiment Data
                 sentiment_data = {
                     'score': sentiment_score,
-                    'breakdown': sentiment_breakdown # Pass full breakdown (pos/neg %)
+                    'breakdown': sentiment_breakdown,
+                    'confidence': sentiment_confidence  # STAGE 2: Pass confidence
                 }
-
-                # 3. Call Generator
+                
                 insights = generate_insights(
                     api_key=API_KEYS['gemini'],
                     coin_symbol=coin_symbol,
                     market_data=market_data,
-                    sentiment_data=sentiment_data,     # NEW: Passing dict
+                    sentiment_data=sentiment_data,
                     technical_indicators=technical_indicators,
-                    prediction_data=prediction_data,   # NEW: Passing dict
+                    prediction_data=prediction_data,
                     top_headlines=headlines[:5],
                     horizon_days=horizon_days
                 )
@@ -357,15 +463,16 @@ def analyze_cryptocurrency(
                     'recommendation': 'HOLD / WAIT',
                     'score': 0.0,
                     'insight': f'Error generating insights: {str(e)}',
-                    'source': 'error'
+                    'source': 'error',
+                    'risks': []
                 }
         else:
-            # Keep existing fallback logic
             insights = {
                 'recommendation': 'HOLD / WAIT',
                 'score': 0.0,
                 'insight': 'Gemini API key not configured. Please add your API key to enable AI-powered insights.',
-                'source': 'no_api_key'
+                'source': 'no_api_key',
+                'risks': []
             }
         
         # ====================================================================
@@ -381,6 +488,7 @@ def analyze_cryptocurrency(
             'headlines': headlines,
             'sentiment_score': sentiment_score,
             'sentiment_breakdown': sentiment_breakdown,
+            'sentiment_confidence': sentiment_confidence,  # STAGE 2
             'sentiment_details': sentiment_df,
             'forecast_table': forecast_table,
             'predictions': {
@@ -394,7 +502,16 @@ def analyze_cryptocurrency(
         
     except Exception as e:
         logger.error(f"Analysis error: {e}", exc_info=True)
-        return {'error': str(e)}
+        return {
+            'error': f'❌ Unexpected error: {str(e)}',
+            'suggestion': 'Please try again. If the problem persists, the service might be temporarily unavailable.',
+            'error_type': 'unknown'
+        }
+
+
+# ============================================================================
+# UI RENDERING FUNCTIONS (ENHANCED)
+# ============================================================================
 
 def build_analysis_summary(
     insight_text: str,
@@ -406,22 +523,16 @@ def build_analysis_summary(
     horizon_days: int,
     risks: List
 ) -> str:
-    """
-    Build a comprehensive analysis summary combining AI insight with key data points
-    
-    Returns:
-        Formatted string with analysis and key metrics
-    """
-    
+    """Build comprehensive analysis summary combining AI insight with key data points"""
     lines = []
     
-    # ===== SECTION 1: AI INSIGHT =====
+    # AI Insight
     if insight_text and len(insight_text) > 20:
         lines.append("**AI Analysis:**")
         lines.append(insight_text)
         lines.append("")
     
-    # ===== SECTION 2: PRICE FORECAST =====
+    # Price Forecast
     if forecast_table:
         current_price = market_data.get('price_usd', 0)
         final_forecast = forecast_table[-1].get('ensemble') if forecast_table else None
@@ -431,13 +542,12 @@ def build_analysis_summary(
             price_change_pct = (price_change / current_price) * 100 if current_price > 0 else 0
             
             direction = "📈 UP" if price_change_pct > 0 else "📉 DOWN"
-            lines.append("**7-Day Forecast:**")
+            lines.append(f"**{horizon_days}-Day Forecast:**")
             lines.append(f"{direction} {abs(price_change_pct):.2f}% to ${final_forecast:,.0f}")
             lines.append("")
     
-    # ===== SECTION 3: TECHNICAL ANALYSIS =====
+    # Technical signals
     technical_signals = []
-    
     rsi = technical.get('rsi', 50)
     if not pd.isna(rsi):
         if rsi >= 70:
@@ -455,21 +565,12 @@ def build_analysis_summary(
     else:
         technical_signals.append("〰️ Sideways")
     
-    volatility = technical.get('volatility', 0)
-    if not pd.isna(volatility):
-        if volatility > 0.10:
-            technical_signals.append("High Volatility ⚡")
-        elif volatility > 0.05:
-            technical_signals.append("Medium Volatility")
-        else:
-            technical_signals.append("Low Volatility")
-    
     if technical_signals:
         lines.append("**Technical Signals:**")
         lines.append(" | ".join(technical_signals))
         lines.append("")
     
-    # ===== SECTION 4: SENTIMENT =====
+    # Sentiment
     pos = sentiment_breakdown.get('positive', 0)
     neg = sentiment_breakdown.get('negative', 0)
     neu = sentiment_breakdown.get('neutral', 0)
@@ -486,16 +587,15 @@ def build_analysis_summary(
     lines.append(f"{sentiment_signal} ({pos:.0f}% pos, {neu:.0f}% neu, {neg:.0f}% neg)")
     lines.append("")
     
-    # ===== SECTION 5: KEY RISKS =====
+    # Key risks
     if risks and isinstance(risks, list) and len(risks) > 0:
         lines.append("**⚠️ Key Risks:**")
-        for i, risk in enumerate(risks[:3], 1):  # Show top 3 risks
+        for i, risk in enumerate(risks[:3], 1):
             lines.append(f"{i}. {risk}")
         lines.append("")
     
-    # ===== SECTION 6: RECOMMENDATION RATIONALE =====
+    # Recommendation rationale
     price_change_24h = market_data.get('pct_change_24h', 0)
-    
     recommendation_reason = ""
     if recommendation == "BUY":
         recommendation_reason = (
@@ -507,7 +607,7 @@ def build_analysis_summary(
             f"Downward pressure with {price_change_24h:+.1f}% daily change "
             f"and weak technicals suggest caution or exit."
         )
-    else:  # HOLD
+    else:
         recommendation_reason = (
             f"Mixed signals with {price_change_24h:+.1f}% daily change warrant "
             f"a consolidation period before new positions."
@@ -516,16 +616,215 @@ def build_analysis_summary(
     lines.append("**Why " + recommendation + "?**")
     lines.append(recommendation_reason)
     
-    # Join with proper markdown line breaks
-    summary = "\n\n".join(lines)
-    
-    return summary
+    return "\n\n".join(lines)
+
+
 # ============================================================================
-# UI RENDERING FUNCTIONS
+# STAGE 3: ENHANCED DASHBOARD SECTIONS (NEW)
+# ============================================================================
+
+def render_enhanced_dashboard_sections(result: Dict, market: Dict, technical: Dict):
+    """Add enhanced market context and prediction quality sections"""
+    
+    coin_id = result['market']['coin']
+    curr_price = market['price_usd']
+    volume = market['volume_24h']
+    market_cap = market['market_cap']
+    predictions = result.get('predictions', {})
+    
+    # Market Context Section
+    st.divider()
+    st.subheader("📊 Market Context")
+    
+    comp_col1, comp_col2, comp_col3, comp_col4 = st.columns(4)
+    
+    with comp_col1:
+        if coin_id != 'bitcoin':
+            st.metric("Market Leader", "Bitcoin", help="Track Bitcoin for market direction")
+        else:
+            st.metric("Market Position", "#1", help="Bitcoin is the market leader")
+    
+    with comp_col2:
+        # Liquidity score
+        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
+            volume_quality = (volume / market_cap) * 100
+            if volume_quality > 15:
+                quality_label = "🟢 Excellent"
+                quality_desc = "Very high trading activity"
+            elif volume_quality > 10:
+                quality_label = "🟢 High"
+                quality_desc = "Strong trading activity"
+            elif volume_quality > 5:
+                quality_label = "🟡 Medium"
+                quality_desc = "Moderate trading activity"
+            else:
+                quality_label = "🔴 Low"
+                quality_desc = "Limited trading activity"
+            
+            st.metric("Liquidity Score", quality_label, f"{volume_quality:.1f}%", help=quality_desc)
+    
+    with comp_col3:
+        # Volatility classification
+        volatility = technical.get('volatility', 0)
+        if not pd.isna(volatility):
+            if volatility > 0.15:
+                vol_label = "🔴 Very High"
+                vol_desc = "Extreme price swings expected"
+            elif volatility > 0.10:
+                vol_label = "🟠 High"
+                vol_desc = "Significant price movements"
+            elif volatility > 0.05:
+                vol_label = "🟡 Medium"
+                vol_desc = "Moderate price fluctuations"
+            else:
+                vol_label = "🟢 Low"
+                vol_desc = "Stable price action"
+            
+            st.metric("Volatility", vol_label, f"{volatility:.2%}", help=vol_desc)
+    
+    with comp_col4:
+        # Price position relative to bands
+        bb_upper = technical.get('bb_upper', curr_price * 1.05)
+        bb_lower = technical.get('bb_lower', curr_price * 0.95)
+        
+        if curr_price > bb_upper:
+            position = "🔴 Extended"
+            position_desc = "Price above upper band"
+        elif curr_price < bb_lower:
+            position = "🟢 Compressed"
+            position_desc = "Price below lower band"
+        else:
+            position = "🟡 Normal"
+            position_desc = "Within bands"
+        
+        st.metric("Price Position", position, help=position_desc)
+    
+    # Prediction Quality Section
+    if predictions and predictions.get('ensemble'):
+        st.divider()
+        st.subheader("🎯 Prediction Quality Metrics")
+        
+        pred_col1, pred_col2, pred_col3, pred_col4 = st.columns(4)
+        
+        lstm_preds = predictions.get('lstm', [])
+        xgb_preds = predictions.get('xgboost', [])
+        ensemble_preds = predictions.get('ensemble', [])
+        
+        if len(lstm_preds) > 0 and len(xgb_preds) > 0 and len(ensemble_preds) > 0:
+            lstm_final = lstm_preds[-1]
+            xgb_final = xgb_preds[-1]
+            ensemble_final = ensemble_preds[-1]
+            
+            with pred_col1:
+                # Model agreement
+                lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final * 100)
+                xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final * 100)
+                avg_diff = (lstm_diff + xgb_diff) / 2
+                confidence = max(50, 100 - min(avg_diff * 10, 50))
+                
+                if confidence > 85:
+                    agreement_label = "🟢 Strong"
+                elif confidence > 70:
+                    agreement_label = "🟡 Moderate"
+                else:
+                    agreement_label = "🔴 Weak"
+                
+                st.metric("Model Agreement", agreement_label, f"{confidence:.0f}%", 
+                         help="How much LSTM and XGBoost agree")
+            
+            with pred_col2:
+                pred_range = abs((lstm_final - xgb_final) / curr_price * 100)
+                st.metric("Forecast Range", f"±{pred_range:.1f}%", 
+                         help="Spread between model predictions")
+            
+            with pred_col3:
+                pred_return = ((ensemble_final - curr_price) / curr_price * 100)
+                volatility = technical.get('volatility', 0.05)
+                risk_adj = pred_return / (volatility * 100 + 1) if volatility > 0 else 0
+                st.metric("Risk-Adj Return", f"{risk_adj:.2f}", 
+                         help="Expected return ÷ volatility")
+            
+            with pred_col4:
+                direction = "📈 Bullish" if pred_return > 2 else ("📉 Bearish" if pred_return < -2 else "↔️ Neutral")
+                st.metric("Forecast Signal", direction, f"{pred_return:+.1f}%", 
+                         help="Expected price movement")
+
+
+# ============================================================================
+# STAGE 3: ENHANCED CHART (NEW)
+# ============================================================================
+
+def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, horizon_days):
+    """Create interactive chart with support/resistance lines"""
+    if combined_df.empty:
+        st.info("Insufficient data for chart")
+        return
+    
+    # Reset index for Altair
+    plot_df = combined_df.reset_index()
+    plot_df.columns = ['Date'] + [col for col in plot_df.columns if col != 'Date']
+    
+    # Get current price and levels
+    current_price = float(market_data.get('price_usd', 0))
+    support_level = technical.get('support', current_price * 0.95)
+    resistance_level = technical.get('resistance', current_price * 1.05)
+    
+    # Melt for Altair
+    value_cols = [col for col in plot_df.columns if col != 'Date']
+    plot_df_melted = plot_df.melt('Date', value_vars=value_cols, var_name='Series', value_name='Price')
+    plot_df_melted = plot_df_melted.dropna(subset=['Price'])
+    
+    # Create base chart
+    base = alt.Chart(plot_df_melted).mark_line(size=2.5).encode(
+        x=alt.X('Date:T', title='Date', axis=alt.Axis(format='%b %d')),
+        y=alt.Y('Price:Q', title='Price (USD)', scale=alt.Scale(zero=False)),
+        color=alt.Color(
+            'Series:N',
+            scale=alt.Scale(domain=['History', 'Forecast'], range=['#4e79a7', '#ff4d4f']),
+            legend=alt.Legend(title="Data Type", orient='top')
+        ),
+        strokeWidth=alt.condition(alt.datum.Series == 'Forecast', alt.value(3), alt.value(2)),
+        tooltip=[
+            alt.Tooltip('Date:T', title='Date', format='%Y-%m-%d'),
+            alt.Tooltip('Series:N', title='Type'),
+            alt.Tooltip('Price:Q', title='Price', format='$,.2f')
+        ]
+    )
+    
+    # Support line (green dashed)
+    support_df = pd.DataFrame({'y': [support_level], 'label': [f'Support: ${support_level:,.2f}']})
+    support_line = alt.Chart(support_df).mark_rule(
+        strokeDash=[8, 4], color='#22c55e', size=2, opacity=0.7
+    ).encode(y='y:Q', tooltip='label:N')
+    
+    # Resistance line (red dashed)
+    resistance_df = pd.DataFrame({'y': [resistance_level], 'label': [f'Resistance: ${resistance_level:,.2f}']})
+    resistance_line = alt.Chart(resistance_df).mark_rule(
+        strokeDash=[8, 4], color='#ef4444', size=2, opacity=0.7
+    ).encode(y='y:Q', tooltip='label:N')
+    
+    # Current price line (yellow solid)
+    current_df = pd.DataFrame({'y': [current_price], 'label': [f'Current: ${current_price:,.2f}']})
+    current_line = alt.Chart(current_df).mark_rule(
+        color='#facc15', size=2.5, opacity=0.9
+    ).encode(y='y:Q', tooltip='label:N')
+    
+    # Combine all layers
+    chart = (base + support_line + resistance_line + current_line).properties(
+        height=400,
+        title=f"{coin_symbol} Price: History & {horizon_days}-Day Forecast"
+    ).configure_title(fontSize=16, font='Arial', anchor='start').interactive()
+    
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("🟢 Green = Support | 🔴 Red = Resistance | 🟡 Yellow = Current | 📊 Blue = History | 📈 Red = Forecast")
+
+
+# ============================================================================
+# MAIN DASHBOARD RENDERING
 # ============================================================================
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
-    """Render the main summary dashboard with all insights - FIXED VERSION"""
+    """Render the main summary dashboard with all insights"""
     
     market = result['market']
     technical = result['technical']
@@ -542,20 +841,14 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     volume = market['volume_24h']
     rsi = technical['rsi']
     
-    # Recommendation styling - FIXED: Use consistent recommendation from insights
+    # Recommendation styling
     rec_text = insights.get('recommendation', 'HOLD / WAIT').upper().strip()
     if "BUY" in rec_text:
-        rec_label = "BUY"
-        rec_emoji = "🟢"
-        rec_color = "#16a34a"
+        rec_label, rec_emoji, rec_color = "BUY", "🟢", "#16a34a"
     elif "SELL" in rec_text:
-        rec_label = "SELL / AVOID"
-        rec_emoji = "🔴"
-        rec_color = "#ef4444"
+        rec_label, rec_emoji, rec_color = "SELL / AVOID", "🔴", "#ef4444"
     else:
-        rec_label = "HOLD / WAIT"
-        rec_emoji = "🟡"
-        rec_color = "#f59e0b"
+        rec_label, rec_emoji, rec_color = "HOLD / WAIT", "🟡", "#f59e0b"
     
     # ========================================================================
     # HEADER SECTION
@@ -564,13 +857,9 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     
     cols = st.columns([1.5, 1.2, 1.2, 1.2])
     
-    # Price column
     with cols[0]:
         st.markdown("**Price**")
-        st.markdown(
-            f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>", unsafe_allow_html=True)
         
         if not pd.isna(pct_24h):
             arrow = "🔺" if pct_24h >= 0 else "🔻"
@@ -581,62 +870,50 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 unsafe_allow_html=True
             )
         
-        # Recommendation badge
         st.markdown(
             f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
             f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
             f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
             unsafe_allow_html=True
         )
-
     
-    # Market metrics
     with cols[1]:
         st.metric("Market Cap", format_money(market_cap))
         st.metric("24h Volume", format_money(volume))
     
     with cols[2]:
-        # 7d Change with sign
-        pct_7d_sign = "+" if pct_7d >= 0 else "" if pd.isna(pct_7d) else ""
-        pct_7d_display = f"{pct_7d_sign}{pct_7d:.2f}%" if not pd.isna(pct_7d) else "—"
+        pct_7d_display = f"{pct_7d:+.2f}%" if not pd.isna(pct_7d) else "—"
         st.metric("7d Change", pct_7d_display)
         
-        # RSI with zone
-        if not pd.isna(rsi):
-            rsi_zone = get_rsi_zone(rsi)
-            rsi_display = f"{rsi:.1f} ({rsi_zone})"
-        else:
-            rsi_display = "—"
+        rsi_display = f"{rsi:.1f} ({get_rsi_zone(rsi)})" if not pd.isna(rsi) else "—"
         st.metric("RSI (14)", rsi_display)
     
     with cols[3]:
         st.write("**Quick Info**")
         
-        # Liquidity ratio
         if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
             liq_pct = (volume / market_cap) * 100
             liq_icon = "🟢" if liq_pct > 10 else "🟡" if liq_pct > 5 else "🔴"
             st.caption(f"{liq_icon} Liquidity: {liq_pct:.1f}%")
         
-        # RSI Zone (redundant but in quick info)
-        rsi_info = f"📊 {get_rsi_zone(rsi)}"
-        st.caption(rsi_info)
+        st.caption(f"📊 {get_rsi_zone(rsi)}")
         
-        # Trend
         trend_icon = "📈" if technical.get('trend') == 'uptrend' else "📉" if technical.get('trend') == 'downtrend' else "〰️"
         st.caption(f"{trend_icon} Trend: {technical.get('trend', 'N/A').title()}")
+    
+    # STAGE 3: Enhanced dashboard sections
+    render_enhanced_dashboard_sections(result, market, technical)
     
     st.divider()
     
     # ========================================================================
-    # INSIGHTS AND RISK SECTION 
+    # INSIGHTS AND RISK SECTION
     # ========================================================================
     st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
     main_col, risk_col = st.columns([2.5, 1])
     
     with main_col:
-        # Recommendation - CONSISTENT with top
         st.markdown(
             f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
             f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
@@ -644,27 +921,18 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             unsafe_allow_html=True
         )
         
-        # Confidence score - FIXED: Display as percentage
         rec_score = insights.get('score', 0.5)
         if not pd.isna(rec_score):
-            if isinstance(rec_score, float):
-                score_100 = max(0, min(100, int(round(rec_score * 100))))
-            else:
-                score_100 = int(rec_score)
+            score_100 = max(0, min(100, int(round(rec_score * 100)) if isinstance(rec_score, float) else int(rec_score)))
             st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
         
-        # Source indicator
         source = insights.get('source', 'unknown')
         if source == 'gemini':
             st.caption("🤖 Powered by Google Gemini 2.0 Flash")
-        elif source == 'fallback':
-            st.caption("⚙️ Rule-based analysis")
         elif source == 'no_api_key':
-            st.warning("⚠️ Gemini API key not configured. Add your API key for AI-powered insights.")
+            st.warning("⚠️ Gemini API key not configured.")
         
         st.write("")
-        
-        # Sentiment visualization
         st.markdown("**📊 News Sentiment Analysis**")
         pos = sentiment_breakdown['positive']
         neu = sentiment_breakdown['neutral']
@@ -673,11 +941,14 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.markdown(sentiment_bar(pos, neu, neg))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # Insights text - ENHANCED: More detailed analysis
+        # STAGE 2: Show sentiment confidence
+        sentiment_conf = result.get('sentiment_confidence', 0.5)
+        if sentiment_conf > 0:
+            st.caption(f"📊 Sentiment Confidence: {sentiment_conf:.0%}")
+        
         st.write("")
         st.markdown("**📋 Analysis Summary**")
         
-        # Build comprehensive analysis summary
         analysis_summary = build_analysis_summary(
             insight_text=insights.get('insight', ''),
             recommendation=rec_label,
@@ -694,13 +965,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     with risk_col:
         st.markdown("**⚠️ Risk Factors**")
         
-        # Display risks from Gemini if available
         risks = insights.get('risks', [])
         if risks and isinstance(risks, list):
-            for risk in risks[:3]:  # Show top 3 risks
+            for risk in risks[:3]:
                 st.write(f"• {risk}")
         else:
-            # Fallback risk calculation
+            # Fallback risks
             if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
                 liq_pct = (volume / market_cap) * 100
                 if liq_pct < 5:
@@ -718,17 +988,10 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     st.write("🟡 Medium volatility")
                 else:
                     st.write("🟢 Low volatility")
-            
-            if not pd.isna(rsi):
-                if rsi >= 70:
-                    st.write("🟡 Overbought (RSI)")
-                elif rsi <= 30:
-                    st.write("🟡 Oversold (RSI)")
         
         st.write("")
         st.markdown("**📈 Technical Signals**")
         
-        # Momentum
         momentum = technical.get('momentum', 0)
         if not pd.isna(momentum):
             if momentum > 5:
@@ -740,7 +1003,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             else:
                 st.write("🔴 Strong downward momentum")
         
-        # Trend
         trend = technical.get('trend', 'sideways')
         if trend == 'uptrend':
             st.write("🟢 Uptrend detected")
@@ -752,7 +1014,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     st.divider()
     
     # ========================================================================
-    # FORECAST SECTION
+    # FORECAST SECTION WITH ENHANCED CHART
     # ========================================================================
     st.subheader(f"🎯 {horizon_days}-Day Price Forecast")
     
@@ -760,7 +1022,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     history_df = result.get('history')
     
     if forecast_table:
-        # Build forecast DataFrame
         forecast_rows = []
         for row in forecast_table:
             date = row['date']
@@ -785,40 +1046,54 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             # Create combined chart
             combined_df = pd.DataFrame()
             
-            # Add history
             if history_df is not None and not history_df.empty and 'price' in history_df.columns:
                 hist_series = history_df['price'].tail(90)
                 combined_df['History'] = hist_series
             
-            # Add forecast
             if not df_forecast.empty:
                 forecast_series = df_forecast['Forecast ($)'].astype(float)
                 forecast_series.index = pd.to_datetime(forecast_series.index)
                 combined_df = pd.concat([combined_df, forecast_series.rename('Forecast')])
             
+            # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
-                # Reset index for Altair
-                plot_df = combined_df.reset_index()
-                plot_df.columns = ['Date', 'History', 'Forecast']
-                plot_df = plot_df.melt('Date', var_name='Series', value_name='Price')
-                plot_df = plot_df.dropna(subset=['Price'])
-                
-                # Create chart
-                chart = alt.Chart(plot_df).mark_line(size=2).encode(
-                    x=alt.X('Date:T', title='Date'),
-                    y=alt.Y('Price:Q', title='Price (USD)', scale=alt.Scale(zero=False)),
-                    color=alt.Color(
-                        'Series:N',
-                        scale=alt.Scale(domain=['History', 'Forecast'], range=['#4e79a7', '#ff4d4f'])
-                    ),
-                    tooltip=['Date:T', 'Series:N', alt.Tooltip('Price:Q', format=',.2f')]
-                ).properties(height=350)
-                
-                st.altair_chart(chart, use_container_width=True)
+                create_enhanced_chart(combined_df, market, technical, symbol, horizon_days)
             else:
                 st.info("Insufficient data for chart")
     else:
         st.info("No forecast data available")
+
+
+# ============================================================================
+# STAGE 3: ENHANCED ERROR DISPLAY (NEW)
+# ============================================================================
+
+def display_enhanced_error(result):
+    """Display error with helpful suggestions"""
+    error_msg = result.get('error', 'Unknown error')
+    error_type = result.get('error_type', 'unknown')
+    suggestion = result.get('suggestion', 'Please try again.')
+    
+    icon_map = {
+        'validation': '⚠️',
+        'timeout': '⏱️',
+        'connection': '🌐',
+        'data_not_found': '❌',
+        'api_error': '🔌',
+        'unknown': '❓'
+    }
+    icon = icon_map.get(error_type, '❌')
+    
+    st.error(f"{icon} {error_msg}")
+    
+    if suggestion:
+        st.info(f"💡 **Suggestion:** {suggestion}")
+    
+    if error_type in ['timeout', 'connection', 'api_error']:
+        if st.button("🔄 Retry", type="secondary"):
+            st.rerun()
+
+
 # ============================================================================
 # STREAMLIT APP CONFIGURATION
 # ============================================================================
@@ -836,6 +1111,7 @@ st.markdown("""
 .stButton > button { border-radius: 12px !important; }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ============================================================================
 # MAIN APP
@@ -897,7 +1173,7 @@ def main():
             result = analyze_cryptocurrency(coin_id, horizon)
             
             if 'error' in result:
-                st.error(f"❌ Error: {result['error']}")
+                display_enhanced_error(result)  # STAGE 3: Enhanced error display
             else:
                 st.session_state.last_result = result
                 st.session_state.last_horizon = horizon
@@ -912,9 +1188,25 @@ def main():
     else:
         st.info("👆 Enter a query above to get started! Try 'Bitcoin forecast' or 'Should I buy ETH?'")
 
+
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
