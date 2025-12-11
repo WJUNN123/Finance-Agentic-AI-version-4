@@ -762,7 +762,10 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
     
     # Reset index for Altair
     plot_df = combined_df.reset_index()
-    plot_df.columns = ['Date'] + [col for col in plot_df.columns if col != 'Date']
+    if 'Date' not in plot_df.columns:
+    # First column is likely the date index
+    date_col = plot_df.columns[0]
+    plot_df = plot_df.rename(columns={date_col: 'Date'})
     
     # Get current price and levels
     current_price = float(market_data.get('price_usd', 0))
