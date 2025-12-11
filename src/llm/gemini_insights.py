@@ -13,7 +13,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class GeminiInsightGenerator:
-    """Enhanced Gemini integration with better prompt engineering"""
+    """Enhanced Gemini integration with prediction-aligned recommendations"""
     
     def __init__(
         self,
@@ -45,24 +45,46 @@ class GeminiInsightGenerator:
         horizon_days: int = 7
     ) -> Dict:
         """
-        Generate comprehensive investment insights with multi-factor analysis
+        Generate insights with PREDICTION-FIRST recommendation logic
         """
-        # Build enhanced structured prompt
-        prompt = self._build_enhanced_prompt(
+        
+        # CRITICAL FIX: Calculate predicted ROI FIRST
+        curr_price = market_data.get('price_usd', 0)
+        predicted_roi = 0.0
+        final_pred = curr_price
+        
+        if prediction_data and prediction_data.get('ensemble'):
+            ensemble = prediction_data['ensemble']
+            if len(ensemble) > 0:
+                final_pred = ensemble[-1]
+                predicted_roi = ((final_pred - curr_price) / curr_price) * 100 if curr_price > 0 else 0
+        
+        # RULE-BASED FALLBACK (if Gemini fails or gives wrong recommendation)
+        rule_based_rec = self._get_rule_based_recommendation(
+            predicted_roi=predicted_roi,
+            sentiment_data=sentiment_data,
+            technical_indicators=technical_indicators,
+            market_data=market_data
+        )
+        
+        # Build enhanced prompt with EXPLICIT prediction emphasis
+        prompt = self._build_prediction_focused_prompt(
             coin_symbol=coin_symbol,
             market_data=market_data,
             sentiment_data=sentiment_data,
             tech=technical_indicators,
             preds=prediction_data,
             headlines=top_headlines,
-            horizon=horizon_days
+            horizon=horizon_days,
+            predicted_roi=predicted_roi,
+            final_pred=final_pred
         )
         
         try:
             config = genai.types.GenerationConfig(
                 temperature=self.temperature,
                 max_output_tokens=self.max_tokens,
-                response_mime_type="application/json"  # Force JSON response
+                response_mime_type="application/json"
             )
             
             response = self.model.generate_content(prompt, generation_config=config)
@@ -72,8 +94,14 @@ class GeminiInsightGenerator:
             parsed = self._parse_json_response(response_text)
             
             if parsed:
-                # Validate and enhance response
-                validated = self._validate_and_enhance_response(parsed, market_data, prediction_data)
+                # CRITICAL FIX: Validate recommendation matches prediction
+                validated = self._validate_recommendation_matches_prediction(
+                    parsed=parsed,
+                    predicted_roi=predicted_roi,
+                    rule_based_rec=rule_based_rec,
+                    market_data=market_data
+                )
+                
                 return {
                     "recommendation": validated.get("recommendation", "HOLD"),
                     "score": validated.get("confidence_score", 0.5),
@@ -83,264 +111,170 @@ class GeminiInsightGenerator:
                     "key_signals": validated.get("key_signals", {}),
                     "source": "gemini",
                     "model": self.model_name,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "predicted_roi": predicted_roi  # Include for debugging
                 }
             else:
-                logger.warning("Failed to parse JSON response, using fallback")
-                return self._fallback_parse(response_text)
+                logger.warning("Failed to parse JSON, using rule-based recommendation")
+                return rule_based_rec
             
         except Exception as e:
             logger.error(f"Error generating insights: {e}")
-            return self._get_fallback_response()
+            return rule_based_rec
 
-    def _build_enhanced_prompt(
-        self, 
-        coin_symbol: str, 
-        market_data: Dict, 
-        sentiment_data: Dict, 
-        tech: Dict, 
-        preds: Dict, 
-        headlines: List[str], 
-        horizon: int
-    ) -> str:
-        """Enhanced prompt with better structure and reasoning steps"""
+    def _get_rule_based_recommendation(
+        self,
+        predicted_roi: float,
+        sentiment_data: Dict,
+        technical_indicators: Dict,
+        market_data: Dict
+    ) -> Dict:
+        """
+        RULE-BASED fallback that ALWAYS aligns with prediction
+        """
         
-        curr_price = market_data.get('price_usd', 0)
+        # PRIMARY SIGNAL: Price prediction
+        if predicted_roi <= -10:
+            base_rec = "SELL"
+            base_confidence = 0.75
+            base_insight = f"Strong sell signal: Model predicts {predicted_roi:.1f}% decline over the forecast period."
+        elif predicted_roi <= -5:
+            base_rec = "SELL"
+            base_confidence = 0.65
+            base_insight = f"Bearish outlook: Model predicts {predicted_roi:.1f}% decline. Consider reducing exposure."
+        elif predicted_roi < -2:
+            base_rec = "HOLD"
+            base_confidence = 0.55
+            base_insight = f"Cautious stance: Model predicts {predicted_roi:.1f}% decline. Wait for better entry."
+        elif predicted_roi < 2:
+            base_rec = "HOLD"
+            base_confidence = 0.50
+            base_insight = f"Neutral outlook: Model predicts {predicted_roi:.1f}% movement. Consolidation expected."
+        elif predicted_roi < 5:
+            base_rec = "HOLD"
+            base_confidence = 0.55
+            base_insight = f"Slight upside: Model predicts {predicted_roi:.1f}% gain. Monitor for confirmation."
+        elif predicted_roi < 10:
+            base_rec = "BUY"
+            base_confidence = 0.65
+            base_insight = f"Bullish signal: Model predicts {predicted_roi:.1f}% upside. Favorable risk/reward."
+        else:
+            base_rec = "BUY"
+            base_confidence = 0.75
+            base_insight = f"Strong buy signal: Model predicts {predicted_roi:.1f}% upside over forecast period."
+        
+        # SECONDARY SIGNALS: Adjust confidence
+        rsi = technical_indicators.get('rsi', 50)
+        sentiment_score = sentiment_data.get('score', 0)
         pct_24h = market_data.get('pct_change_24h', 0)
-        pct_7d = market_data.get('pct_change_7d', 0)
         
-        # Process predictions with confidence bands if available
-        pred_text = "No predictive models available."
-        if preds and preds.get('ensemble'):
-            ensemble = preds['ensemble']
-            if len(ensemble) > 0:
-                final_pred = ensemble[-1]
-                pred_roi = ((final_pred - curr_price) / curr_price) * 100
-                
-                # Analyze trajectory
-                if len(ensemble) >= 3:
-                    early = ensemble[0]
-                    mid = ensemble[len(ensemble)//2]
-                    final = ensemble[-1]
-                    
-                    if mid > early and mid > final:
-                        trend_shape = "peak-and-decline"
-                    elif mid < early and mid < final:
-                        trend_shape = "dip-and-recovery"
-                    elif final > curr_price * 1.02:
-                        trend_shape = "steady-upward"
-                    elif final < curr_price * 0.98:
-                        trend_shape = "steady-downward"
-                    else:
-                        trend_shape = "sideways"
-                else:
-                    trend_shape = "insufficient-data"
-                
-                # Get confidence bands if available
-                confidence_info = ""
-                if 'confidence_bands' in preds and preds['confidence_bands']:
-                    bands = preds['confidence_bands'][-1]  # Last day
-                    upper = bands.get('upper', final_pred * 1.1)
-                    lower = bands.get('lower', final_pred * 0.9)
-                    confidence_range = ((upper - lower) / final_pred) * 100
-                    confidence_info = f" | 95% CI Range: ±{confidence_range:.1f}%"
-                
-                pred_text = (
-                    f"Predicted End Price: ${final_pred:,.2f} | "
-                    f"Projected ROI: {pred_roi:+.2f}% | "
-                    f"Trajectory: {trend_shape}{confidence_info}"
-                )
+        # RSI adjustment
+        if rsi > 70 and base_rec == "BUY":
+            base_confidence -= 0.15  # Overbought reduces buy confidence
+        elif rsi < 30 and base_rec == "SELL":
+            base_confidence -= 0.15  # Oversold reduces sell confidence
+        
+        # Sentiment adjustment
+        breakdown = sentiment_data.get('breakdown', {'positive': 0, 'negative': 0})
+        if breakdown.get('positive', 0) > 60 and base_rec == "BUY":
+            base_confidence += 0.05  # Strong positive sentiment boosts buy
+        elif breakdown.get('negative', 0) > 60 and base_rec == "SELL":
+            base_confidence += 0.05  # Strong negative sentiment boosts sell
+        
+        # Momentum alignment
+        if pct_24h > 5 and base_rec == "BUY":
+            base_confidence += 0.05
+        elif pct_24h < -5 and base_rec == "SELL":
+            base_confidence += 0.05
+        
+        # Cap confidence
+        base_confidence = max(0.3, min(0.95, base_confidence))
+        
+        # Generate risks
+        risks = []
+        if abs(predicted_roi) > 15:
+            risks.append("High predicted volatility - large price movement expected")
+        if rsi > 70:
+            risks.append("Overbought conditions (RSI > 70) may lead to pullback")
+        elif rsi < 30:
+            risks.append("Oversold conditions (RSI < 30) may indicate capitulation")
+        if technical_indicators.get('volatility', 0) > 0.1:
+            risks.append("High volatility increases price uncertainty")
+        if base_rec == "SELL" and pct_24h > 0:
+            risks.append("Recommendation contradicts recent upward momentum")
+        
+        return {
+            "recommendation": base_rec,
+            "score": base_confidence,
+            "insight": base_insight,
+            "risks": risks if risks else ["Market conditions remain uncertain"],
+            "opportunities": [],
+            "key_signals": {
+                "prediction": f"{'BEARISH' if predicted_roi < -2 else 'BULLISH' if predicted_roi > 2 else 'NEUTRAL'} ({predicted_roi:+.1f}%)",
+                "technical": f"RSI {rsi:.0f}, Volatility {technical_indicators.get('volatility', 0):.4f}",
+                "sentiment": f"Score {sentiment_score:.2f}"
+            },
+            "source": "rule_based",
+            "model": "fallback"
+        }
 
-        # Enhanced sentiment processing
-        sent_score = sentiment_data.get('score', 0)
-        breakdown = sentiment_data.get('breakdown', {'positive': 0, 'negative': 0, 'neutral': 0})
+    def _validate_recommendation_matches_prediction(
+        self,
+        parsed: Dict,
+        predicted_roi: float,
+        rule_based_rec: Dict,
+        market_data: Dict
+    ) -> Dict:
+        """
+        CRITICAL FIX: Validate AI recommendation matches prediction
+        If mismatch detected, override with rule-based recommendation
+        """
         
-        pos_pct = breakdown.get('positive', 0)
-        neg_pct = breakdown.get('negative', 0)
-        neu_pct = breakdown.get('neutral', 0)
-        
-        # Calculate sentiment strength
-        sent_strength = abs(pos_pct - neg_pct)
-        if sent_strength > 30:
-            sent_strength_label = "STRONG"
-        elif sent_strength > 15:
-            sent_strength_label = "MODERATE"
+        ai_rec = parsed.get("recommendation", "HOLD").upper().strip()
+        if "BUY" in ai_rec:
+            ai_rec = "BUY"
+        elif "SELL" in ai_rec:
+            ai_rec = "SELL"
         else:
-            sent_strength_label = "WEAK"
+            ai_rec = "HOLD"
         
-        sent_interpretation = self._interpret_sentiment_score(sent_score)
-        sent_text = (
-            f"Aggregate Score: {sent_score:.2f} ({sent_interpretation}) | "
-            f"Distribution: {pos_pct:.0f}% Positive, {neu_pct:.0f}% Neutral, {neg_pct:.0f}% Negative | "
-            f"Signal Strength: {sent_strength_label}"
-        )
-
-        # Enhanced technical analysis
-        rsi = tech.get('rsi', 50)
-        volatility = tech.get('volatility', 0)
-        trend = tech.get('trend', 'sideways')
-        momentum = tech.get('momentum', 0)
+        # Check for CRITICAL mismatches
+        mismatch = False
         
-        rsi_zone = self._get_rsi_zone(rsi)
-        rsi_signal = "BEARISH" if rsi > 70 else "BULLISH" if rsi < 30 else "NEUTRAL"
+        # RULE 1: Don't recommend BUY if prediction shows >5% drop
+        if ai_rec == "BUY" and predicted_roi < -5:
+            logger.warning(f"⚠️ MISMATCH: AI says BUY but prediction is {predicted_roi:.1f}% DOWN")
+            mismatch = True
         
-        # Bollinger Bands analysis
-        bb_status = "Within Bands (Normal)"
-        bb_signal = "NEUTRAL"
-        if tech.get('bb_upper') and curr_price > tech['bb_upper']:
-            bb_status = "Above Upper Band"
-            bb_signal = "OVERBOUGHT"
-        elif tech.get('bb_lower') and curr_price < tech['bb_lower']:
-            bb_status = "Below Lower Band"
-            bb_signal = "OVERSOLD"
+        # RULE 2: Don't recommend SELL if prediction shows >5% gain
+        if ai_rec == "SELL" and predicted_roi > 5:
+            logger.warning(f"⚠️ MISMATCH: AI says SELL but prediction is {predicted_roi:.1f}% UP")
+            mismatch = True
         
-        # Momentum analysis
-        momentum_signal = "BULLISH" if momentum > 5 else "BEARISH" if momentum < -5 else "NEUTRAL"
+        # RULE 3: Strong drops (>10%) should NEVER be HOLD
+        if predicted_roi < -10 and ai_rec != "SELL":
+            logger.warning(f"⚠️ MISMATCH: Prediction shows {predicted_roi:.1f}% drop but AI says {ai_rec}")
+            mismatch = True
         
-        tech_text = (
-            f"RSI: {rsi:.1f} ({rsi_zone}) → Signal: {rsi_signal} | "
-            f"Bollinger Bands: {bb_status} → Signal: {bb_signal} | "
-            f"Trend: {trend.upper()} | "
-            f"Momentum: {momentum:.2f}% → Signal: {momentum_signal} | "
-            f"Volatility: {volatility:.4f}"
-        )
-
-        # Price action summary
-        price_action = (
-            f"Current: ${curr_price:,.2f} | "
-            f"24h: {pct_24h:+.2f}% | "
-            f"7d: {pct_7d:+.2f}%"
-        )
-
-        # Recent headlines (top 5)
-        headlines_text = "\n  ".join(headlines[:5]) if headlines else "No recent headlines"
-
-        # Build the enhanced prompt
-        return f"""You are an Expert Cryptocurrency Investment Analyst with 10+ years of experience in technical analysis, market psychology, and risk management. 
-
-Analyze the following comprehensive data for {coin_symbol} and provide a professional investment recommendation.
-
-═══════════════════════════════════════════════════════════════
-📊 MARKET DATA
-═══════════════════════════════════════════════════════════════
-{price_action}
-
-Forecast ({horizon} days): {pred_text}
-
-═══════════════════════════════════════════════════════════════
-💭 SENTIMENT ANALYSIS
-═══════════════════════════════════════════════════════════════
-News Sentiment: {sent_text}
-
-═══════════════════════════════════════════════════════════════
-📈 TECHNICAL INDICATORS
-═══════════════════════════════════════════════════════════════
-{tech_text}
-
-═══════════════════════════════════════════════════════════════
-📰 RECENT HEADLINES
-═══════════════════════════════════════════════════════════════
-  {headlines_text}
-
-═══════════════════════════════════════════════════════════════
-🎯 YOUR ANALYSIS TASK
-═══════════════════════════════════════════════════════════════
-
-Provide a JSON response with this EXACT structure:
-
-{{
-  "recommendation": "BUY" | "SELL" | "HOLD",
-  "confidence_score": 0.0 to 1.0,
-  "analysis": "2-3 professional sentences explaining your recommendation based on multi-factor convergence/divergence",
-  "key_signals": {{
-    "technical": "BULLISH/BEARISH/MIXED with brief reason",
-    "sentiment": "BULLISH/BEARISH/MIXED with brief reason",
-    "prediction": "BULLISH/BEARISH/MIXED with brief reason"
-  }},
-  "risks": ["3-5 specific risk factors"],
-  "opportunities": ["2-3 specific opportunity factors if applicable"],
-  "reasoning": "Brief explanation of how you reconciled conflicting signals"
-}}
-
-═══════════════════════════════════════════════════════════════
-🧠 DECISION FRAMEWORK
-═══════════════════════════════════════════════════════════════
-
-**Step 1: Signal Alignment Analysis**
-- Count BULLISH signals vs BEARISH signals across all factors
-- Strong BUY: 70%+ signals aligned bullish + prediction shows >5% upside
-- Strong SELL: 70%+ signals aligned bearish + prediction shows >5% downside
-- HOLD: Mixed signals (<70% alignment) OR low conviction
-
-**Step 2: Risk Assessment**
-- RSI extremes (>70 or <30) = Contrarian signal (be cautious)
-- High volatility = Increase uncertainty, lower confidence
-- Weak sentiment strength = Lower conviction
-- Prediction uncertainty (wide confidence bands) = Lower confidence
-
-**Step 3: Confidence Scoring**
-- 0.8-1.0: Strong signal alignment (>80%) + supportive fundamentals
-- 0.6-0.8: Good alignment (70-80%) + reasonable conviction
-- 0.4-0.6: Mixed signals, moderate uncertainty
-- 0.2-0.4: Conflicting signals, high uncertainty
-- 0.0-0.2: Very uncertain, lacking data
-
-**Step 4: Risk-Adjusted Recommendation**
-- Even with bullish signals, if RSI >75 or volatility >0.15, consider HOLD
-- Even with bearish signals, if RSI <25 and sentiment improving, consider HOLD
-- Always prioritize capital preservation in ambiguous situations
-
-═══════════════════════════════════════════════════════════════
-
-IMPORTANT:
-- Be intellectually honest - don't force a BUY/SELL if signals are mixed
-- Explain WHY you chose this recommendation despite any conflicting data
-- Provide actionable, specific risks (not generic warnings)
-- Keep analysis concise but insightful
-
-Respond with ONLY valid JSON, no markdown formatting."""
-
-    def _parse_json_response(self, response_text: str) -> Optional[Dict]:
-        """Enhanced JSON parsing with better error handling"""
-        try:
-            # Try direct parsing first
-            parsed = json.loads(response_text)
-            return parsed
-        except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group(1))
-                    return parsed
-                except:
-                    pass
-            
-            # Try to find JSON object
-            json_match = re.search(r'\{[^{}]*"recommendation"[^{}]*\}', response_text, re.DOTALL)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group())
-                    return parsed
-                except:
-                    pass
+        # RULE 4: Strong gains (>10%) should NEVER be SELL
+        if predicted_roi > 10 and ai_rec == "SELL":
+            logger.warning(f"⚠️ MISMATCH: Prediction shows {predicted_roi:.1f}% gain but AI says SELL")
+            mismatch = True
         
-        logger.error("Failed to parse JSON response")
-        return None
-
-    def _validate_and_enhance_response(self, parsed: Dict, market_data: Dict, prediction_data: Dict) -> Dict:
-        """Validate and enhance the parsed response"""
+        if mismatch:
+            logger.info(f"✅ Overriding with rule-based recommendation: {rule_based_rec['recommendation']}")
+            # Use rule-based recommendation but keep AI's analysis if good
+            return {
+                "recommendation": rule_based_rec["recommendation"],
+                "confidence_score": rule_based_rec["score"],
+                "analysis": parsed.get("analysis", rule_based_rec["insight"]),
+                "risks": parsed.get("risks", rule_based_rec["risks"]),
+                "opportunities": parsed.get("opportunities", []),
+                "key_signals": rule_based_rec.get("key_signals", {}),
+                "reasoning": f"Recommendation adjusted to align with {predicted_roi:+.1f}% predicted ROI"
+            }
         
-        # Normalize recommendation
-        rec = parsed.get("recommendation", "HOLD").upper().strip()
-        if "BUY" in rec:
-            rec = "BUY"
-        elif "SELL" in rec:
-            rec = "SELL"
-        else:
-            rec = "HOLD"
-        
-        # Validate confidence score
+        # No mismatch - use AI recommendation
         score = parsed.get("confidence_score", 0.5)
         if isinstance(score, str):
             try:
@@ -349,103 +283,164 @@ Respond with ONLY valid JSON, no markdown formatting."""
                 score = 0.5
         score = max(0.0, min(1.0, float(score)))
         
-        # Get analysis text
-        analysis = parsed.get("analysis", "")
-        if not analysis:
-            analysis = parsed.get("reasoning", "Analysis not available")
-        
-        # Get risks
-        risks = parsed.get("risks", [])
-        if not isinstance(risks, list):
-            risks = []
-        
-        # Get opportunities
-        opportunities = parsed.get("opportunities", [])
-        if not isinstance(opportunities, list):
-            opportunities = []
-        
-        # Get key signals
-        key_signals = parsed.get("key_signals", {})
-        if not isinstance(key_signals, dict):
-            key_signals = {}
-        
         return {
-            "recommendation": rec,
+            "recommendation": ai_rec,
             "confidence_score": score,
-            "analysis": analysis,
-            "risks": risks[:5],  # Limit to top 5
-            "opportunities": opportunities[:3],  # Limit to top 3
-            "key_signals": key_signals,
+            "analysis": parsed.get("analysis", ""),
+            "risks": parsed.get("risks", [])[:5],
+            "opportunities": parsed.get("opportunities", [])[:3],
+            "key_signals": parsed.get("key_signals", {}),
             "reasoning": parsed.get("reasoning", "")
         }
 
-    def _fallback_parse(self, text: str) -> Dict:
-        """Fallback parsing if JSON extraction fails"""
-        logger.warning("Using fallback text parsing")
+    def _build_prediction_focused_prompt(
+        self,
+        coin_symbol: str,
+        market_data: Dict,
+        sentiment_data: Dict,
+        tech: Dict,
+        preds: Dict,
+        headlines: List[str],
+        horizon: int,
+        predicted_roi: float,
+        final_pred: float
+    ) -> str:
+        """Build prompt that EMPHASIZES prediction alignment"""
         
-        # Extract recommendation
-        rec = "HOLD"
-        if re.search(r'\bBUY\b', text, re.IGNORECASE):
-            rec = "BUY"
-        elif re.search(r'\bSELL\b', text, re.IGNORECASE):
-            rec = "SELL"
+        curr_price = market_data.get('price_usd', 0)
+        pct_24h = market_data.get('pct_change_24h', 0)
+        pct_7d = market_data.get('pct_change_7d', 0)
         
-        # Extract confidence
-        score = 0.5
-        score_match = re.search(r'(?:confidence|score)[:\s]+(\d+(?:\.\d+)?)', text, re.IGNORECASE)
-        if score_match:
-            try:
-                score = float(score_match.group(1))
-                if score > 1:
-                    score = score / 100.0
-            except:
-                pass
-        
-        return {
-            "recommendation": rec,
-            "score": score,
-            "insight": text[:600],
-            "risks": ["Unable to extract detailed risks"],
-            "opportunities": [],
-            "key_signals": {},
-            "source": "gemini_fallback",
-            "model": self.model_name
-        }
-
-    def _interpret_sentiment_score(self, score: float) -> str:
-        """Convert sentiment score to text"""
-        if score >= 0.5:
-            return "Very Positive"
-        elif score >= 0.2:
-            return "Positive"
-        elif score >= -0.2:
-            return "Neutral"
-        elif score >= -0.5:
-            return "Negative"
+        # Determine trend from prediction
+        if predicted_roi < -10:
+            pred_interpretation = "⚠️ STRONG BEARISH - Major decline predicted"
+        elif predicted_roi < -5:
+            pred_interpretation = "📉 BEARISH - Downward movement expected"
+        elif predicted_roi < -2:
+            pred_interpretation = "↘️ SLIGHTLY BEARISH - Mild decline expected"
+        elif predicted_roi < 2:
+            pred_interpretation = "➡️ NEUTRAL - Sideways movement expected"
+        elif predicted_roi < 5:
+            pred_interpretation = "↗️ SLIGHTLY BULLISH - Mild gain expected"
+        elif predicted_roi < 10:
+            pred_interpretation = "📈 BULLISH - Upward movement expected"
         else:
-            return "Very Negative"
+            pred_interpretation = "🚀 STRONG BULLISH - Major gain predicted"
+        
+        # Sentiment
+        sent_score = sentiment_data.get('score', 0)
+        breakdown = sentiment_data.get('breakdown', {'positive': 0, 'negative': 0, 'neutral': 0})
+        
+        # Technical
+        rsi = tech.get('rsi', 50)
+        volatility = tech.get('volatility', 0)
+        trend = tech.get('trend', 'sideways')
+        
+        headlines_text = "\n  ".join(headlines[:3]) if headlines else "No recent headlines"
+        
+        return f"""You are an Expert Cryptocurrency Investment Analyst. Your PRIMARY JOB is to make recommendations that ALIGN with price predictions.
 
-    def _get_rsi_zone(self, rsi: float) -> str:
-        """Interpret RSI value"""
-        if rsi >= 70:
-            return "Overbought"
-        elif rsi <= 30:
-            return "Oversold"
-        else:
-            return "Neutral"
+═══════════════════════════════════════════════════════════════
+🎯 PRIMARY SIGNAL: PRICE PREDICTION (MOST IMPORTANT!)
+═══════════════════════════════════════════════════════════════
+Current Price: ${curr_price:,.2f}
+Predicted Price ({horizon} days): ${final_pred:,.2f}
+Predicted ROI: {predicted_roi:+.2f}%
 
-    def _get_fallback_response(self) -> Dict:
-        """Return fallback response on error"""
-        return {
-            "recommendation": "HOLD",
-            "score": 0.5,
-            "insight": "AI insights temporarily unavailable. Please check your API key configuration.",
-            "risks": ["API connectivity issue"],
-            "opportunities": [],
-            "key_signals": {},
-            "source": "fallback",
-            "model": self.model_name
-        }
+INTERPRETATION: {pred_interpretation}
+
+⚠️ CRITICAL RULE: Your recommendation MUST align with this prediction!
+- If predicted ROI < -5% → You MUST recommend SELL or HOLD (never BUY)
+- If predicted ROI > +5% → You MUST recommend BUY or HOLD (never SELL)
+- If predicted ROI between -5% and +5% → HOLD is acceptable
+
+═══════════════════════════════════════════════════════════════
+📊 SUPPORTING SIGNALS (Use to adjust confidence only)
+═══════════════════════════════════════════════════════════════
+
+MARKET DATA:
+- 24h Change: {pct_24h:+.2f}%
+- 7d Change: {pct_7d:+.2f}%
+
+TECHNICAL:
+- RSI: {rsi:.1f} ({'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'})
+- Trend: {trend.upper()}
+- Volatility: {volatility:.4f}
+
+SENTIMENT:
+- News Sentiment Score: {sent_score:.2f}
+- Distribution: {breakdown.get('positive', 0):.0f}% pos, {breakdown.get('negative', 0):.0f}% neg
+
+HEADLINES:
+  {headlines_text}
+
+═══════════════════════════════════════════════════════════════
+📋 YOUR TASK
+═══════════════════════════════════════════════════════════════
+
+Provide a JSON response:
+
+{{
+  "recommendation": "BUY" | "SELL" | "HOLD",
+  "confidence_score": 0.0 to 1.0,
+  "analysis": "Explain your recommendation focusing on WHY the prediction shows {predicted_roi:+.1f}% movement",
+  "key_signals": {{
+    "prediction": "Primary driver of recommendation",
+    "technical": "Supporting or conflicting signal",
+    "sentiment": "Supporting or conflicting signal"
+  }},
+  "risks": ["List 3-5 specific risks"],
+  "opportunities": ["List 1-3 opportunities if BUY, otherwise empty"],
+  "reasoning": "Explain how prediction influenced your decision"
+}}
+
+═══════════════════════════════════════════════════════════════
+🧠 DECISION FRAMEWORK
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Look at predicted ROI ({predicted_roi:+.2f}%)
+- Is it <-5%? → Lean SELL
+- Is it >+5%? → Lean BUY  
+- Is it between -5% and +5%? → Lean HOLD
+
+STEP 2: Check for extreme technical conflicts
+- If RSI >75 and prediction is bullish → Lower confidence, might HOLD instead of BUY
+- If RSI <25 and prediction is bearish → Lower confidence, might HOLD instead of SELL
+
+STEP 3: Adjust confidence based on supporting signals
+- Sentiment aligns with prediction → +10% confidence
+- Momentum aligns with prediction → +10% confidence
+- Conflicting signals → -20% confidence
+
+STEP 4: Final recommendation
+- Your recommendation MUST make sense given a {predicted_roi:+.1f}% predicted move
+- If you recommend BUY, the prediction should show gains
+- If you recommend SELL, the prediction should show losses
+- HOLD is for unclear or small predicted moves
+
+RESPOND WITH ONLY VALID JSON."""
+
+    def _parse_json_response(self, response_text: str) -> Optional[Dict]:
+        """Enhanced JSON parsing"""
+        try:
+            parsed = json.loads(response_text)
+            return parsed
+        except json.JSONDecodeError:
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(1))
+                except:
+                    pass
+            
+            json_match = re.search(r'\{[^{}]*"recommendation"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except:
+                    pass
+        
+        return None
 
 
 def generate_insights(api_key: str, **kwargs) -> Dict:
