@@ -806,20 +806,14 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
         strokeDash=[8, 4], color='#ef4444', size=2, opacity=0.7
     ).encode(y='y:Q', tooltip='label:N')
     
-    # Current price line (yellow solid)
-    current_df = pd.DataFrame({'y': [current_price], 'label': [f'Current: ${current_price:,.2f}']})
-    current_line = alt.Chart(current_df).mark_rule(
-        color='#facc15', size=2.5, opacity=0.9
-    ).encode(y='y:Q', tooltip='label:N')
-    
     # Combine all layers
-    chart = (base + support_line + resistance_line + current_line).properties(
+    chart = (base + support_line + resistance_line).properties(
         height=400,
         title=f"{coin_symbol} Price: History & {horizon_days}-Day Forecast"
     ).configure_title(fontSize=16, font='Arial', anchor='start').interactive()
     
     st.altair_chart(chart, use_container_width=True)
-    st.caption("🟢 Green = Support | 🔴 Red = Resistance | 🟡 Yellow = Current | 📊 Blue = History | 📈 Red = Forecast")
+    st.caption("🟢 Green dashed line = Support | 🔴 Red dashed line = Resistance | 📊 Blue = History | 📈 Red = Forecast")
 
 
 # ============================================================================
