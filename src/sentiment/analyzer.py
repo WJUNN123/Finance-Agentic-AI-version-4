@@ -54,7 +54,7 @@ class SentimentAnalyzer:
             return
             
         try:
-            logger.info(f"Loading sentiment model: {self.model_name}")
+            logger.info(f"🤖 Loading sentiment model: {self.model_name}")
             
             self.pipeline = pipeline(
                 "sentiment-analysis",
@@ -65,10 +65,10 @@ class SentimentAnalyzer:
                 max_length=self.max_length
             )
             
-            logger.info("Sentiment model loaded successfully")
+            logger.info("✅ Sentiment model loaded successfully")
             
         except Exception as e:
-            logger.error(f"Error loading sentiment model: {e}")
+            logger.error(f"❌ Error loading sentiment model: {e}")
             raise
             
     def analyze_texts(self, texts: List[str]) -> List[Dict]:
@@ -89,7 +89,7 @@ class SentimentAnalyzer:
             self.load_model()
             
         try:
-            logger.info(f"Analyzing sentiment for {len(texts)} texts")
+            logger.info(f"🔍 Analyzing sentiment for {len(texts)} texts")
             
             # Run sentiment analysis
             predictions = self.pipeline(
@@ -112,23 +112,30 @@ class SentimentAnalyzer:
                     "score": score,
                     "value": value
                 })
-                
-            logger.info(f"Sentiment analysis complete")
+            
+            # Log distribution
+            pos_count = sum(1 for r in results if r['value'] > 0)
+            neg_count = sum(1 for r in results if r['value'] < 0)
+            neu_count = len(results) - pos_count - neg_count
+            
+            logger.info(f"✅ Sentiment analysis complete: {pos_count} pos, {neu_count} neu, {neg_count} neg")
             return results
             
         except Exception as e:
-            logger.error(f"Error during sentiment analysis: {e}")
+            logger.error(f"❌ Error during sentiment analysis: {e}")
             raise
-            
+    
     def calculate_aggregate_sentiment(
         self, 
-        analyses: List[Dict]
+        analyses: List[Dict],
+        use_recency_bias: bool = True
     ) -> Tuple[float, pd.DataFrame]:
         """
-        Calculate weighted aggregate sentiment score
+        Calculate weighted aggregate sentiment with recency bias
         
         Args:
             analyses: List of sentiment analysis results
+            use_recency_bias: Weight recent news higher (default True)
             
         Returns:
             Tuple of (aggregate_score, dataframe)
@@ -136,24 +143,84 @@ class SentimentAnalyzer:
             - dataframe: Detailed results with all analyses
         """
         if not analyses:
-            return 0.0, pd.DataFrame(columns=["text", "label", "score", "value"])
-            
-        # Calculate weighted score
+            return 0.0, pd.DataFrame(columns=["text", "label", "score", "value", "weight"])
+        
+        # Calculate weighted score with recency bias
         total_value = 0.0
         total_weight = 0.0
         
-        for analysis in analyses:
+        for idx, analysis in enumerate(analyses):
             value = analysis["value"]
-            weight = analysis["score"]
+            confidence = analysis["score"]
+            
+            # Recency weight: newer articles get higher weight
+            if use_recency_bias:
+                # Linear decay from 1.0 to 0.5
+                recency_weight = 1.0 - (idx / len(analyses)) * 0.5
+            else:
+                recency_weight = 1.0
+            
+            # Combined weight: confidence * recency
+            weight = confidence * recency_weight
+            
             total_value += value * weight
             total_weight += weight
             
+            # Store weight in analysis for transparency
+            analysis['weight'] = weight
+            analysis['recency_weight'] = recency_weight
+        
         aggregate_score = total_value / total_weight if total_weight > 0 else 0.0
         
-        # Create DataFrame
+        # Create DataFrame with weights
         df = pd.DataFrame(analyses)
         
+        logger.info(f"📊 Aggregate sentiment: {aggregate_score:.3f} (recency_bias={use_recency_bias})")
+        
         return float(aggregate_score), df
+    
+    def get_sentiment_confidence(self, analyses: List[Dict]) -> float:
+        """
+        Calculate confidence in sentiment prediction based on agreement
+        
+        Args:
+            analyses: List of sentiment analysis results
+            
+        Returns:
+            Confidence score 0-1
+        """
+        if not analyses:
+            return 0.0
+        
+        # Get sentiment values and model confidence scores
+        values = [a['value'] for a in analyses]
+        scores = [a['score'] for a in analyses]
+        
+        # Average model confidence
+        avg_model_confidence = np.mean(scores)
+        
+        # Check agreement among sources (low variance = high agreement)
+        if len(values) > 1:
+            variance = np.var(values)
+            # Convert variance to agreement score (0 variance = 1.0 agreement)
+            # Max variance for sentiment is 4.0 (all -1 or all +1 spread)
+            agreement_score = 1.0 - min(variance / 4.0, 1.0)
+        else:
+            agreement_score = 1.0
+        
+        # Sample size factor (more samples = higher confidence)
+        sample_size_factor = min(len(analyses) / 20.0, 1.0)  # Cap at 20 articles
+        
+        # Combined confidence: weighted average
+        confidence = (
+            avg_model_confidence * 0.4 +
+            agreement_score * 0.4 +
+            sample_size_factor * 0.2
+        )
+        
+        logger.debug(f"🎯 Sentiment confidence: {confidence:.3f} (model: {avg_model_confidence:.2f}, agreement: {agreement_score:.2f}, samples: {len(analyses)})")
+        
+        return float(confidence)
         
     def get_sentiment_breakdown(self, analyses: List[Dict]) -> Dict[str, float]:
         """
@@ -188,6 +255,29 @@ class SentimentAnalyzer:
         }
         
         return percentages
+    
+    def get_sentiment_strength(self, score: float) -> str:
+        """
+        Get textual description of sentiment strength
+        
+        Args:
+            score: Aggregate sentiment score (-1 to +1)
+            
+        Returns:
+            Strength descriptor
+        """
+        abs_score = abs(score)
+        
+        if abs_score >= 0.7:
+            return "Very Strong"
+        elif abs_score >= 0.5:
+            return "Strong"
+        elif abs_score >= 0.3:
+            return "Moderate"
+        elif abs_score >= 0.1:
+            return "Weak"
+        else:
+            return "Neutral"
         
     def interpret_sentiment(self, score: float) -> str:
         """
