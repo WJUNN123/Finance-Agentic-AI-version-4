@@ -755,7 +755,7 @@ def render_enhanced_dashboard_sections(result: Dict, market: Dict, technical: Di
 # ============================================================================
 
 def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, horizon_days, prediction_data=None):
-    """Create interactive chart with DYNAMIC support/resistance lines based on predictions"""
+    """Create interactive chart with DYNAMIC support/resistance lines"""
     if combined_df.empty:
         st.info("Insufficient data for chart")
         return
@@ -763,34 +763,33 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
     # Reset index for Altair
     plot_df = combined_df.reset_index()
     if 'Date' not in plot_df.columns:
-        # First column is likely the date index
         date_col = plot_df.columns[0]
         plot_df = plot_df.rename(columns={date_col: 'Date'})
     
     # Get current price
     current_price = float(market_data.get('price_usd', 0))
     
-    # === DYNAMIC SUPPORT/RESISTANCE CALCULATION ===
-    # Calculate based on PREDICTED price (not current price)
+    # === DYNAMIC SUPPORT/RESISTANCE - USE FORECAST RANGE ===
     if prediction_data and 'ensemble' in prediction_data:
         ensemble_preds = prediction_data.get('ensemble', [])
         if ensemble_preds and len(ensemble_preds) > 0:
-            # Use predicted price for support/resistance
+            # Get min/max of entire forecast
             predicted_price = float(ensemble_preds[-1])
-            # Support = 5% below predicted price
-            support_level = predicted_price * 0.95
-            # Resistance = 5% above predicted price
-            resistance_level = predicted_price * 1.05
+            min_forecast = float(min(ensemble_preds))
+            max_forecast = float(max(ensemble_preds))
             
-            logger.info(f"📊 Dynamic levels - Predicted: ${predicted_price:,.2f}, "
+            # Support = min forecast - 2%
+            support_level = min_forecast * 0.98
+            # Resistance = max forecast + 2%
+            resistance_level = max_forecast * 1.02
+            
+            logger.info(f"📊 Dynamic range - Min: ${min_forecast:,.2f}, Max: ${max_forecast:,.2f}, "
                        f"Support: ${support_level:,.2f}, Resistance: ${resistance_level:,.2f}")
         else:
-            # Fallback to current price if no predictions
             predicted_price = current_price
             support_level = current_price * 0.95
             resistance_level = current_price * 1.05
     else:
-        # Fallback to current price if no prediction data
         predicted_price = current_price
         support_level = current_price * 0.95
         resistance_level = current_price * 1.05
@@ -825,34 +824,26 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
         ]
     )
     
-    # Support line (green dashed) - DYNAMIC based on prediction
-    support_df = pd.DataFrame({
-        'y': [support_level], 
-        'label': [f'Support: ${support_level:,.2f}']
-    })
-    support_line = alt.Chart(support_df).mark_rule(
+    # Support line (green) - FIXED: explicitly set y value
+    support_line = alt.Chart(pd.DataFrame({'y': [support_level]})).mark_rule(
         strokeDash=[8, 4], 
-        color='#10b981',  # Tailwind green-500
-        size=2.5, 
+        color='#10b981',
+        size=2.5,
         opacity=0.8
     ).encode(
-        y='y:Q', 
-        tooltip=alt.Tooltip('label:N', title='Support Level')
+        y=alt.Y('y:Q', scale=alt.Scale(zero=False)),
+        tooltip=alt.value(f'Support: ${support_level:,.2f}')
     )
     
-    # Resistance line (red dashed) - DYNAMIC based on prediction
-    resistance_df = pd.DataFrame({
-        'y': [resistance_level], 
-        'label': [f'Resistance: ${resistance_level:,.2f}']
-    })
-    resistance_line = alt.Chart(resistance_df).mark_rule(
-        strokeDash=[8, 4], 
-        color='#ef4444',  # Tailwind red-500
-        size=2.5, 
+    # Resistance line (red) - FIXED: explicitly set y value  
+    resistance_line = alt.Chart(pd.DataFrame({'y': [resistance_level]})).mark_rule(
+        strokeDash=[8, 4],
+        color='#ef4444',
+        size=2.5,
         opacity=0.8
     ).encode(
-        y='y:Q', 
-        tooltip=alt.Tooltip('label:N', title='Resistance Level')
+        y=alt.Y('y:Q', scale=alt.Scale(zero=False)),
+        tooltip=alt.value(f'Resistance: ${resistance_level:,.2f}')
     )
     
     # Combine all layers
@@ -860,21 +851,21 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
         height=400,
         title=f"{coin_symbol} Price: History & {horizon_days}-Day Forecast"
     ).configure_title(
-        fontSize=16, 
-        font='Arial', 
+        fontSize=16,
+        font='Arial',
         anchor='start',
         color='#1f2937'
     ).interactive()
     
-    # Display chart
+    # Display
     st.altair_chart(chart, use_container_width=True)
     
-    # Enhanced caption with actual values
+    # Caption with forecast range
     roi_pct = ((predicted_price - current_price) / current_price * 100) if current_price > 0 else 0
     
     st.caption(
-        f"🟢 **Support: ${support_level:,.2f}** (95% of target) | "
-        f"🔴 **Resistance: ${resistance_level:,.2f}** (105% of target) | "
+        f"🟢 **Support: ${support_level:,.2f}** (forecast min) | "
+        f"🔴 **Resistance: ${resistance_level:,.2f}** (forecast max) | "
         f"🎯 **Target: ${predicted_price:,.2f}** ({roi_pct:+.1f}%) | "
         f"📊 Blue = History | 📈 Red = Forecast"
     )
