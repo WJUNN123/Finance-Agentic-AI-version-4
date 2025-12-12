@@ -754,8 +754,8 @@ def render_enhanced_dashboard_sections(result: Dict, market: Dict, technical: Di
 # STAGE 3: ENHANCED CHART (NEW)
 # ============================================================================
 
-def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, horizon_days):
-    """Create interactive chart with support/resistance lines"""
+def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, horizon_days, prediction_data=None):
+    """Create interactive chart with DYNAMIC support/resistance lines based on predictions"""
     if combined_df.empty:
         st.info("Insufficient data for chart")
         return
@@ -767,15 +767,46 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
         date_col = plot_df.columns[0]
         plot_df = plot_df.rename(columns={date_col: 'Date'})
     
-    # Get current price and levels
+    # Get current price
     current_price = float(market_data.get('price_usd', 0))
-    support_level = technical.get('support', current_price * 0.95)
-    resistance_level = technical.get('resistance', current_price * 1.05)
+    
+    # === DYNAMIC SUPPORT/RESISTANCE CALCULATION ===
+    # Calculate based on PREDICTED price (not current price)
+    if prediction_data and 'ensemble' in prediction_data:
+        ensemble_preds = prediction_data.get('ensemble', [])
+        if ensemble_preds and len(ensemble_preds) > 0:
+            # Use predicted price for support/resistance
+            predicted_price = float(ensemble_preds[-1])
+            # Support = 5% below predicted price
+            support_level = predicted_price * 0.95
+            # Resistance = 5% above predicted price
+            resistance_level = predicted_price * 1.05
+            
+            logger.info(f"📊 Dynamic levels - Predicted: ${predicted_price:,.2f}, "
+                       f"Support: ${support_level:,.2f}, Resistance: ${resistance_level:,.2f}")
+        else:
+            # Fallback to current price if no predictions
+            predicted_price = current_price
+            support_level = current_price * 0.95
+            resistance_level = current_price * 1.05
+    else:
+        # Fallback to current price if no prediction data
+        predicted_price = current_price
+        support_level = current_price * 0.95
+        resistance_level = current_price * 1.05
     
     # Melt for Altair
     value_cols = [col for col in plot_df.columns if col != 'Date']
+    if not value_cols:
+        st.warning("No data columns found for charting")
+        return
+    
     plot_df_melted = plot_df.melt('Date', value_vars=value_cols, var_name='Series', value_name='Price')
     plot_df_melted = plot_df_melted.dropna(subset=['Price'])
+    
+    if plot_df_melted.empty:
+        st.warning("No valid data for charting")
+        return
     
     # Create base chart
     base = alt.Chart(plot_df_melted).mark_line(size=2.5).encode(
@@ -794,26 +825,59 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
         ]
     )
     
-    # Support line (green dashed)
-    support_df = pd.DataFrame({'y': [support_level], 'label': [f'Support: ${support_level:,.2f}']})
+    # Support line (green dashed) - DYNAMIC based on prediction
+    support_df = pd.DataFrame({
+        'y': [support_level], 
+        'label': [f'Support: ${support_level:,.2f}']
+    })
     support_line = alt.Chart(support_df).mark_rule(
-        strokeDash=[8, 4], color='#22c55e', size=2, opacity=0.7
-    ).encode(y='y:Q', tooltip='label:N')
+        strokeDash=[8, 4], 
+        color='#10b981',  # Tailwind green-500
+        size=2.5, 
+        opacity=0.8
+    ).encode(
+        y='y:Q', 
+        tooltip=alt.Tooltip('label:N', title='Support Level')
+    )
     
-    # Resistance line (red dashed)
-    resistance_df = pd.DataFrame({'y': [resistance_level], 'label': [f'Resistance: ${resistance_level:,.2f}']})
+    # Resistance line (red dashed) - DYNAMIC based on prediction
+    resistance_df = pd.DataFrame({
+        'y': [resistance_level], 
+        'label': [f'Resistance: ${resistance_level:,.2f}']
+    })
     resistance_line = alt.Chart(resistance_df).mark_rule(
-        strokeDash=[8, 4], color='#ef4444', size=2, opacity=0.7
-    ).encode(y='y:Q', tooltip='label:N')
+        strokeDash=[8, 4], 
+        color='#ef4444',  # Tailwind red-500
+        size=2.5, 
+        opacity=0.8
+    ).encode(
+        y='y:Q', 
+        tooltip=alt.Tooltip('label:N', title='Resistance Level')
+    )
     
     # Combine all layers
     chart = (base + support_line + resistance_line).properties(
         height=400,
         title=f"{coin_symbol} Price: History & {horizon_days}-Day Forecast"
-    ).configure_title(fontSize=16, font='Arial', anchor='start').interactive()
+    ).configure_title(
+        fontSize=16, 
+        font='Arial', 
+        anchor='start',
+        color='#1f2937'
+    ).interactive()
     
+    # Display chart
     st.altair_chart(chart, use_container_width=True)
-    st.caption("🟢 Green dashed line = Support | 🔴 Red dashed line = Resistance | 📊 Blue = History | 📈 Red = Forecast")
+    
+    # Enhanced caption with actual values
+    roi_pct = ((predicted_price - current_price) / current_price * 100) if current_price > 0 else 0
+    
+    st.caption(
+        f"🟢 **Support: ${support_level:,.2f}** (95% of target) | "
+        f"🔴 **Resistance: ${resistance_level:,.2f}** (105% of target) | "
+        f"🎯 **Target: ${predicted_price:,.2f}** ({roi_pct:+.1f}%) | "
+        f"📊 Blue = History | 📈 Red = Forecast"
+    )
 
 
 # ============================================================================
