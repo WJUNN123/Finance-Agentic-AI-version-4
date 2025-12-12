@@ -1118,7 +1118,20 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             
             # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
-                create_enhanced_chart(combined_df, market, technical, symbol, horizon_days)
+                prediction_data = {
+                'lstm': lstm_preds,
+                'xgboost': xgb_preds,
+                'ensemble': ensemble_preds
+                }
+                
+                create_enhanced_chart(
+                    combined_df=combined_df,
+                    market_data=market,
+                    technical=technical,
+                    coin_symbol=symbol,
+                    horizon_days=horizon_days,
+                    prediction_data=prediction_data  
+                )
             else:
                 st.info("Insufficient data for chart")
     else:
