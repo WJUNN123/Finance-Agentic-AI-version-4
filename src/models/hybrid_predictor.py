@@ -487,36 +487,79 @@ class HybridPredictor:
         self,
         price_series: pd.Series,
         horizon: int = 7,
-        lstm_weight: float = 0.7,
-        xgb_weight: float = 0.3
+        lstm_weight: float = 0.5,  # CHANGED: More balanced
+        xgb_weight: float = 0.5,   # CHANGED: More balanced
+        dampening_factor: float = 0.65,  # NEW: Conservative dampening
+        apply_mean_reversion: bool = True  # NEW: Pull towards MA
     ) -> List[float]:
         """
-        Generate ensemble prediction combining LSTM and XGBoost
+        Generate IMPROVED ensemble prediction with conservative adjustments
         
         Args:
             price_series: Historical prices
             horizon: Days to forecast
-            lstm_weight: Weight for LSTM predictions (default 0.7)
-            xgb_weight: Weight for XGBoost predictions (default 0.3)
+            lstm_weight: Weight for LSTM (default 0.5, balanced)
+            xgb_weight: Weight for XGBoost (default 0.5, balanced)
+            dampening_factor: Reduce extreme predictions (0.5-0.9, default 0.65)
+            apply_mean_reversion: Pull towards 30-day MA (default True)
             
         Returns:
-            List of predicted prices
+            List of predicted prices (more realistic than original)
         """
-        logger.info(f"🎯 Generating {horizon}-day ensemble forecast...")
+        logger.info(f"🎯 Generating {horizon}-day ensemble forecast (IMPROVED)...")
         
         # Get predictions from both models
         lstm_preds = self.predict_lstm(price_series, horizon)
         xgb_preds = self.predict_xgboost(price_series, horizon)
         
-        # Combine predictions with weights
+        # Combine predictions with BALANCED weights
         ensemble = [
             lstm_weight * lstm + xgb_weight * xgb
             for lstm, xgb in zip(lstm_preds, xgb_preds)
         ]
         
-        logger.info(f"✅ Ensemble forecast complete. Final: ${ensemble[-1]:,.2f}")
+        # === IMPROVEMENT 1: TREND DAMPENING ===
+        # Reduce extreme predictions for more realistic short-term forecasts
+        current_price = float(price_series.iloc[-1])
+        dampened = []
         
-        return ensemble
+        for i, pred in enumerate(ensemble):
+            # Calculate percentage change
+            change_pct = (pred - current_price) / current_price
+            
+            # Apply dampening (reduces extreme moves)
+            dampened_change = change_pct * dampening_factor
+            
+            # Convert back to price
+            dampened_price = current_price * (1 + dampened_change)
+            dampened.append(dampened_price)
+        
+        # === IMPROVEMENT 2: MEAN REVERSION ===
+        # Pull predictions towards 30-day moving average
+        if apply_mean_reversion and len(price_series) >= 30:
+            ma_30 = float(price_series.rolling(30).mean().iloc[-1])
+            final_preds = []
+            
+            for i, pred in enumerate(dampened):
+                # Reversion strength decreases with time
+                days_out = i + 1
+                reversion_strength = 0.2 / (1 + days_out * 0.1)
+                
+                # Blend prediction with MA
+                final_price = pred * (1 - reversion_strength) + ma_30 * reversion_strength
+                final_preds.append(final_price)
+        else:
+            final_preds = dampened
+        
+        # === LOGGING ===
+        original_change = ((ensemble[-1] - current_price) / current_price) * 100
+        final_change = ((final_preds[-1] - current_price) / current_price) * 100
+        
+        logger.info(f"✅ Ensemble complete: ${final_preds[-1]:,.2f}")
+        logger.info(f"📉 Adjustment: {original_change:+.1f}% → {final_change:+.1f}% "
+                   f"(dampened by {dampening_factor:.0%})")
+        
+        return final_preds
 
 
 # Convenience function with caching support
