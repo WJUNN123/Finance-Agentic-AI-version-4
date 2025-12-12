@@ -1078,7 +1078,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     # FORECAST SECTION WITH ENHANCED CHART
     # ========================================================================
     st.subheader(f"🎯 {horizon_days}-Day Price Forecast")
-    
+
     forecast_table = result['forecast_table']
     history_df = result.get('history')
     
@@ -1118,10 +1118,11 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             
             # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
+                # === NEW: Package prediction data for dynamic support/resistance ===
                 prediction_data = {
-                'lstm': lstm_preds,
-                'xgboost': xgb_preds,
-                'ensemble': ensemble_preds
+                    'lstm': lstm_preds,
+                    'xgboost': xgb_preds,
+                    'ensemble': ensemble_preds
                 }
                 
                 create_enhanced_chart(
@@ -1130,7 +1131,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     technical=technical,
                     coin_symbol=symbol,
                     horizon_days=horizon_days,
-                    prediction_data=prediction_data  
+                    prediction_data=prediction_data
                 )
             else:
                 st.info("Insufficient data for chart")
