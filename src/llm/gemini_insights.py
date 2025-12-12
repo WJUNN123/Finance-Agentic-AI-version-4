@@ -3,115 +3,24 @@ Gemini LLM Integration
 Generates AI-powered investment insights using Google's Gemini 2.0 Flash
 """
 
-from huggingface_hub import InferenceClient
 from typing import Dict, List, Optional
 import logging
-import re
-import json
-import time
-from functools import wraps
+import random
 
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# RETRY DECORATOR FOR API CALLS
+# RULE-BASED INSIGHT GENERATOR (STREAMLIT CLOUD COMPATIBLE)
 # ============================================================================
 
-def retry_with_backoff(max_retries=3, base_delay=2, max_delay=60):
+class RuleBasedInsightGenerator:
     """
-    Retry decorator with exponential backoff for API rate limits
+    Generates investment insights using advanced rule-based logic
+    Designed to work within Streamlit Cloud free tier limits (1GB RAM)
     """
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            retries = 0
-            delay = base_delay
-            
-            while retries < max_retries:
-                try:
-                    return func(*args, **kwargs)
-                    
-                except Exception as e:
-                    error_str = str(e)
-                    
-                    if "429" in error_str or "quota" in error_str.lower() or "rate limit" in error_str.lower():
-                        retries += 1
-                        if retries >= max_retries:
-                            logger.error(f"❌ Max retries ({max_retries}) reached for {func.__name__}")
-                            raise Exception(
-                                f"API rate limit exceeded after {max_retries} retries. "
-                                f"Please wait a few minutes or check your Hugging Face token."
-                            )
-                        
-                        wait_time = min(delay * (2 ** (retries - 1)), max_delay)
-                        logger.warning(f"⏳ Rate limit hit. Waiting {wait_time}s before retry {retries}/{max_retries}...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.error(f"❌ Error in {func.__name__}: {error_str}")
-                        raise
-            
-            raise Exception(f"Failed after {max_retries} retries")
-        
-        return wrapper
-    return decorator
-
-
-# ============================================================================
-# LLAMA INSIGHT GENERATOR
-# ============================================================================
-
-class LlamaInsightGenerator:
-    """Generates investment insights using Llama 3.1 via Hugging Face"""
     
-    def __init__(
-        self,
-        api_key: str,
-        model_name: str = "meta-llama/Llama-3.1-70B-Instruct",
-        temperature: float = 0.3,
-        max_tokens: int = 2000
-    ):
-        self.model_name = model_name
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.api_key = api_key
-        
-        try:
-            self.client = InferenceClient(token=api_key)
-            logger.info(f"✅ Llama model initialized: {model_name}")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Llama: {e}")
-            raise
-    
-    @retry_with_backoff(max_retries=3, base_delay=5, max_delay=60)
-    def _call_llama_api(self, prompt: str) -> str:
-        """
-        Call Llama API via Hugging Face with retry logic
-        """
-        logger.info(f"🤖 Calling Llama API...")
-        
-        try:
-            # Use chat completion for Llama 3.1
-            messages = [
-                {"role": "user", "content": prompt}
-            ]
-            
-            response = self.client.chat_completion(
-                messages=messages,
-                model=self.model_name,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
-            )
-            
-            if not response or not response.choices:
-                raise Exception("Empty response from Llama API")
-            
-            return response.choices[0].message.content.strip()
-            
-        except Exception as e:
-            error_str = str(e)
-            logger.error(f"❌ Llama API error: {error_str}")
-            raise
+    def __init__(self):
+        logger.info("✅ Rule-based insight generator initialized (Streamlit Cloud compatible)")
     
     def generate_insights(
         self,
@@ -123,73 +32,29 @@ class LlamaInsightGenerator:
         top_headlines: List[str],
         horizon_days: int = 7
     ) -> Dict:
-        """Generate comprehensive investment insights with retry logic"""
+        """Generate comprehensive investment insights using rules"""
         
-        prompt = self._build_prompt(
-            coin_symbol=coin_symbol,
-            market_data=market_data,
-            sentiment_data=sentiment_data,
-            tech=technical_indicators,
-            preds=prediction_data,
-            headlines=top_headlines,
-            horizon=horizon_days
-        )
+        logger.info(f"🤖 Generating insights for {coin_symbol} using rule-based analysis...")
         
-        try:
-            response_text = self._call_llama_api(prompt)
-            parsed = self._parse_json_response(response_text)
-            
-            if parsed:
-                logger.info(f"✅ Generated recommendation: {parsed.get('recommendation')} (confidence: {parsed.get('confidence_score', 0):.2f})")
-                return {
-                    "recommendation": parsed.get("recommendation", "HOLD"),
-                    "score": parsed.get("confidence_score", 0.5),
-                    "insight": parsed.get("analysis", ""),
-                    "risks": parsed.get("risks", []),
-                    "reasoning": parsed.get("reasoning", ""),
-                    "key_factors": parsed.get("key_factors", []),
-                    "source": "llama",
-                    "model": self.model_name
-                }
-            else:
-                logger.warning("⚠️ Failed to parse JSON response, using fallback extraction")
-                return self._fallback_parse(response_text)
-        
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ Error generating insights: {error_msg}")
-            
-            if "quota" in error_msg.lower() or "429" in error_msg or "rate limit" in error_msg.lower():
-                raise Exception(
-                    "⏱️ API rate limit exceeded. Please wait a few minutes and try again."
-                )
-            else:
-                raise Exception(f"Failed to generate insights: {error_msg}")
-    
-    def _build_prompt(
-        self,
-        coin_symbol: str,
-        market_data: Dict,
-        sentiment_data: Dict,
-        tech: Dict,
-        preds: Dict,
-        headlines: List[str],
-        horizon: int
-    ) -> str:
-        """Build comprehensive prompt"""
-        
+        # Extract data
         current_price = market_data.get('price_usd', 0)
         price_change_24h = market_data.get('pct_change_24h', 0)
         price_change_7d = market_data.get('pct_change_7d', 0)
-        market_cap = market_data.get('market_cap', 0)
         volume_24h = market_data.get('volume_24h', 0)
-        liquidity_ratio = (volume_24h / market_cap * 100) if market_cap > 0 else 0
+        market_cap = market_data.get('market_cap', 0)
         
-        lstm_preds = preds.get('lstm', [])
-        xgb_preds = preds.get('xgboost', [])
-        ensemble_preds = preds.get('ensemble', [])
+        # Predictions
+        ensemble_preds = prediction_data.get('ensemble', [])
+        lstm_preds = prediction_data.get('lstm', [])
+        xgb_preds = prediction_data.get('xgboost', [])
         
-        pred_confidence = 0.5
+        # Calculate expected ROI
+        expected_roi = 0
+        if ensemble_preds and current_price > 0:
+            expected_roi = ((ensemble_preds[-1] - current_price) / current_price) * 100
+        
+        # Model agreement
+        model_agreement = 0.5
         if lstm_preds and xgb_preds and ensemble_preds:
             lstm_final = lstm_preds[-1]
             xgb_final = xgb_preds[-1]
@@ -199,137 +64,322 @@ class LlamaInsightGenerator:
                 lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final)
                 xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final)
                 avg_diff = (lstm_diff + xgb_diff) / 2
-                pred_confidence = max(0.3, min(1.0, 1.0 - avg_diff * 2))
+                model_agreement = max(0.3, min(1.0, 1.0 - avg_diff * 2))
         
-        expected_roi = 0
-        if ensemble_preds and current_price > 0:
-            expected_roi = ((ensemble_preds[-1] - current_price) / current_price) * 100
+        # Technical indicators
+        rsi = technical_indicators.get('rsi', 50)
+        trend = technical_indicators.get('trend', 'sideways')
+        volatility = technical_indicators.get('volatility', 0.05)
+        momentum = technical_indicators.get('momentum', 0)
+        macd_histogram = technical_indicators.get('macd_histogram', 0)
+        stoch_k = technical_indicators.get('stochastic_k', 50)
+        bb_position = technical_indicators.get('bb_position', 0.5)
         
+        # Sentiment
         sentiment_score = sentiment_data.get('score', 0.0)
         sentiment_breakdown = sentiment_data.get('breakdown', {})
-        sentiment_confidence = sentiment_data.get('confidence', 0.5)
         pos_pct = sentiment_breakdown.get('positive', 0)
         neg_pct = sentiment_breakdown.get('negative', 0)
         neu_pct = sentiment_breakdown.get('neutral', 0)
         
-        headlines_text = "\n".join([f"- {h}" for h in headlines[:5]]) if headlines else "No recent headlines"
+        # Decision logic
+        recommendation, confidence, analysis, risks, reasoning, key_factors = self._analyze(
+            coin_symbol=coin_symbol,
+            expected_roi=expected_roi,
+            model_agreement=model_agreement,
+            rsi=rsi,
+            trend=trend,
+            volatility=volatility,
+            momentum=momentum,
+            macd_histogram=macd_histogram,
+            stoch_k=stoch_k,
+            bb_position=bb_position,
+            sentiment_score=sentiment_score,
+            pos_pct=pos_pct,
+            neg_pct=neg_pct,
+            price_change_24h=price_change_24h,
+            price_change_7d=price_change_7d,
+            current_price=current_price,
+            horizon_days=horizon_days
+        )
         
-        rsi = tech.get('rsi', 50)
-        trend = tech.get('trend', 'sideways')
-        volatility = tech.get('volatility', 0.05)
-        momentum = tech.get('momentum', 0)
-        
-        prompt = f"""You are an expert cryptocurrency analyst. Analyze {coin_symbol} and provide investment recommendation.
-
-MARKET DATA:
-- Current Price: ${current_price:,.2f}
-- 24h Change: {price_change_24h:+.2f}%
-- 7d Change: {price_change_7d:+.2f}%
-- Market Cap: ${market_cap/1e9:.2f}B
-- Volume: ${volume_24h/1e9:.2f}B
-- Liquidity: {liquidity_ratio:.2f}%
-
-PREDICTIONS ({horizon}-day):
-- LSTM: ${lstm_preds[-1]:,.2f} if lstm_preds else 'N/A'
-- XGBoost: ${xgb_preds[-1]:,.2f} if xgb_preds else 'N/A'
-- Ensemble: ${ensemble_preds[-1]:,.2f} if ensemble_preds else 'N/A'
-- Expected ROI: {expected_roi:+.2f}%
-- Confidence: {pred_confidence:.0%}
-
-TECHNICAL:
-- RSI: {rsi:.1f}
-- Trend: {trend}
-- Volatility: {volatility:.2%}
-- Momentum: {momentum:+.2f}%
-
-SENTIMENT:
-- Score: {sentiment_score:+.2f}
-- {pos_pct:.1f}% Pos, {neu_pct:.1f}% Neu, {neg_pct:.1f}% Neg
-- Confidence: {sentiment_confidence:.0%}
-
-HEADLINES:
-{headlines_text}
-
-Respond with VALID JSON ONLY:
-{{
-  "recommendation": "BUY" | "SELL" | "HOLD",
-  "confidence_score": 0.0 to 1.0,
-  "analysis": "2-3 sentence summary",
-  "risks": ["risk1", "risk2", "risk3"],
-  "reasoning": "brief logic",
-  "key_factors": ["factor1", "factor2", "factor3"]
-}}
-
-RULES:
-- BUY: ROI > 5%, confidence > 60%, RSI < 70
-- SELL: ROI < -3% or RSI > 75
-- HOLD: ROI -3% to 5% or confidence < 50%
-
-Return ONLY JSON (no markdown).
-"""
-        
-        return prompt
-    
-    def _parse_json_response(self, response_text: str) -> Optional[Dict]:
-        """Parse JSON response"""
-        try:
-            cleaned = response_text.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.startswith("```"):
-                cleaned = cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-            
-            parsed = json.loads(cleaned)
-            
-            if "recommendation" in parsed and "confidence_score" in parsed:
-                rec = parsed["recommendation"].upper()
-                if rec not in ["BUY", "SELL", "HOLD"]:
-                    rec = "HOLD"
-                parsed["recommendation"] = rec
-                
-                conf = float(parsed.get("confidence_score", 0.5))
-                parsed["confidence_score"] = max(0.0, min(1.0, conf))
-                
-                return parsed
-            else:
-                logger.warning("⚠️ JSON missing required fields")
-                return None
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ JSON parse error: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Unexpected error parsing JSON: {e}")
-            return None
-    
-    def _fallback_parse(self, response_text: str) -> Dict:
-        """Fallback parser if JSON extraction fails"""
-        logger.info("📝 Using fallback text parser")
-        
-        rec = "HOLD"
-        if re.search(r'\bBUY\b', response_text, re.IGNORECASE):
-            rec = "BUY"
-        elif re.search(r'\bSELL\b', response_text, re.IGNORECASE):
-            rec = "SELL"
-        
-        conf_match = re.search(r'confidence[:\s]+(\d+\.?\d*)[\%]?', response_text, re.IGNORECASE)
-        confidence = float(conf_match.group(1)) / 100 if conf_match else 0.5
-        if confidence > 1.0:
-            confidence = confidence / 100
+        logger.info(f"✅ Generated: {recommendation} (confidence: {confidence:.2f})")
         
         return {
-            "recommendation": rec,
+            "recommendation": recommendation,
             "score": confidence,
-            "insight": response_text[:500],
-            "risks": ["Unable to extract structured risks"],
-            "reasoning": "Fallback parsing used",
-            "key_factors": [],
-            "source": "llama",
-            "model": self.model_name
+            "insight": analysis,
+            "risks": risks,
+            "reasoning": reasoning,
+            "key_factors": key_factors,
+            "source": "rule_based",
+            "model": "advanced_rules"
         }
+    
+    def _analyze(
+        self,
+        coin_symbol: str,
+        expected_roi: float,
+        model_agreement: float,
+        rsi: float,
+        trend: str,
+        volatility: float,
+        momentum: float,
+        macd_histogram: float,
+        stoch_k: float,
+        bb_position: float,
+        sentiment_score: float,
+        pos_pct: float,
+        neg_pct: float,
+        price_change_24h: float,
+        price_change_7d: float,
+        current_price: float,
+        horizon_days: int
+    ) -> tuple:
+        """Advanced rule-based analysis"""
+        
+        # Initialize scores
+        bullish_score = 0
+        bearish_score = 0
+        
+        # === FORECAST ANALYSIS ===
+        if expected_roi > 10:
+            bullish_score += 3
+        elif expected_roi > 5:
+            bullish_score += 2
+        elif expected_roi > 0:
+            bullish_score += 1
+        elif expected_roi < -10:
+            bearish_score += 3
+        elif expected_roi < -5:
+            bearish_score += 2
+        elif expected_roi < 0:
+            bearish_score += 1
+        
+        # === MODEL AGREEMENT ===
+        if model_agreement > 0.9:
+            bullish_score += 2 if expected_roi > 0 else 0
+            bearish_score += 2 if expected_roi < 0 else 0
+        elif model_agreement < 0.5:
+            bullish_score -= 1
+            bearish_score -= 1
+        
+        # === RSI ANALYSIS ===
+        if rsi < 30:
+            bullish_score += 2  # Oversold
+        elif rsi < 40:
+            bullish_score += 1
+        elif rsi > 70:
+            bearish_score += 2  # Overbought
+        elif rsi > 60:
+            bearish_score += 1
+        
+        # === TREND ANALYSIS ===
+        if trend == "uptrend":
+            bullish_score += 2
+        elif trend == "downtrend":
+            bearish_score += 2
+        
+        # === MOMENTUM ===
+        if momentum > 5:
+            bullish_score += 1
+        elif momentum < -5:
+            bearish_score += 1
+        
+        # === MACD ===
+        if macd_histogram > 0:
+            bullish_score += 1
+        elif macd_histogram < 0:
+            bearish_score += 1
+        
+        # === STOCHASTIC ===
+        if stoch_k < 20:
+            bullish_score += 1  # Oversold
+        elif stoch_k > 80:
+            bearish_score += 1  # Overbought
+        
+        # === BOLLINGER BANDS ===
+        if bb_position < 0.2:
+            bullish_score += 1  # Near lower band
+        elif bb_position > 0.8:
+            bearish_score += 1  # Near upper band
+        
+        # === SENTIMENT ===
+        if sentiment_score > 0.3:
+            bullish_score += 1
+        elif sentiment_score < -0.3:
+            bearish_score += 1
+        
+        if pos_pct > 50:
+            bullish_score += 1
+        elif neg_pct > 50:
+            bearish_score += 1
+        
+        # === RECENT PRICE ACTION ===
+        if price_change_24h > 5:
+            bullish_score += 1
+        elif price_change_24h < -5:
+            bearish_score += 1
+        
+        # === DECISION ===
+        net_score = bullish_score - bearish_score
+        
+        if net_score >= 4:
+            recommendation = "BUY"
+            confidence = min(0.85, 0.6 + (net_score * 0.05))
+        elif net_score <= -4:
+            recommendation = "SELL"
+            confidence = min(0.85, 0.6 + (abs(net_score) * 0.05))
+        else:
+            recommendation = "HOLD"
+            confidence = 0.5 + (abs(net_score) * 0.03)
+        
+        # === GENERATE ANALYSIS ===
+        analysis = self._generate_analysis(
+            coin_symbol=coin_symbol,
+            recommendation=recommendation,
+            expected_roi=expected_roi,
+            model_agreement=model_agreement,
+            rsi=rsi,
+            trend=trend,
+            sentiment_score=sentiment_score,
+            price_change_24h=price_change_24h,
+            bullish_score=bullish_score,
+            bearish_score=bearish_score,
+            horizon_days=horizon_days
+        )
+        
+        # === GENERATE RISKS ===
+        risks = self._generate_risks(
+            volatility=volatility,
+            rsi=rsi,
+            model_agreement=model_agreement,
+            sentiment_score=sentiment_score,
+            price_change_24h=price_change_24h
+        )
+        
+        # === REASONING ===
+        reasoning = self._generate_reasoning(
+            recommendation=recommendation,
+            expected_roi=expected_roi,
+            rsi=rsi,
+            trend=trend,
+            bullish_score=bullish_score,
+            bearish_score=bearish_score
+        )
+        
+        # === KEY FACTORS ===
+        key_factors = self._generate_key_factors(
+            expected_roi=expected_roi,
+            model_agreement=model_agreement,
+            rsi=rsi,
+            trend=trend,
+            sentiment_score=sentiment_score
+        )
+        
+        return recommendation, confidence, analysis, risks, reasoning, key_factors
+    
+    def _generate_analysis(
+        self, coin_symbol, recommendation, expected_roi, model_agreement,
+        rsi, trend, sentiment_score, price_change_24h, bullish_score,
+        bearish_score, horizon_days
+    ) -> str:
+        """Generate natural language analysis"""
+        
+        if recommendation == "BUY":
+            templates = [
+                f"{coin_symbol} demonstrates strong bullish momentum with a {expected_roi:+.1f}% forecast over {horizon_days} days. The {model_agreement:.0%} model agreement and {trend} price action support upside potential. Current RSI of {rsi:.0f} indicates room for growth without being overbought.",
+                
+                f"{coin_symbol} shows positive signals with {expected_roi:+.1f}% expected return. Technical indicators align bullishly with RSI at {rsi:.0f} and {trend} momentum. The strong model consensus ({model_agreement:.0%}) adds confidence to the upward forecast.",
+                
+                f"Analysis suggests {coin_symbol} has upside potential of {expected_roi:+.1f}% over {horizon_days} days. The {trend} trend combined with RSI {rsi:.0f} provides favorable entry conditions. High model agreement ({model_agreement:.0%}) reinforces the bullish outlook."
+            ]
+        
+        elif recommendation == "SELL":
+            templates = [
+                f"{coin_symbol} shows bearish indicators with {expected_roi:+.1f}% downside forecast over {horizon_days} days. RSI at {rsi:.0f} suggests overbought conditions, while the {trend} trend confirms selling pressure. Consider reducing exposure to limit downside risk.",
+                
+                f"Technical analysis indicates weakness in {coin_symbol} with {expected_roi:+.1f}% expected decline. The {trend} trend and RSI {rsi:.0f} signal potential further downside. Model agreement of {model_agreement:.0%} supports the bearish outlook.",
+                
+                f"{coin_symbol} faces downward pressure with {expected_roi:+.1f}% forecast decline. Current RSI {rsi:.0f} and {trend} momentum suggest caution. Consider protective measures or exit positions to preserve capital."
+            ]
+        
+        else:  # HOLD
+            templates = [
+                f"{coin_symbol} presents mixed signals with {expected_roi:+.1f}% forecast over {horizon_days} days. While RSI at {rsi:.0f} is neutral, the {trend} trend and recent {price_change_24h:+.1f}% move suggest waiting for clearer directional confirmation before taking new positions.",
+                
+                f"Analysis shows {coin_symbol} in consolidation with {expected_roi:+.1f}% expected move. Technical indicators provide mixed signals - RSI {rsi:.0f} is neutral while trend shows {trend}. Prudent to wait for stronger confirmation before committing capital.",
+                
+                f"{coin_symbol} exhibits balanced technical setup with {expected_roi:+.1f}% forecast. The neutral RSI ({rsi:.0f}) and {trend} trend suggest a wait-and-see approach. Consider holding positions or waiting for clearer market direction."
+            ]
+        
+        return random.choice(templates)
+    
+    def _generate_risks(
+        self, volatility, rsi, model_agreement, sentiment_score, price_change_24h
+    ) -> List[str]:
+        """Generate relevant risk factors"""
+        
+        risks = []
+        
+        if volatility > 0.10:
+            risks.append("High market volatility - expect significant price swings")
+        elif volatility > 0.05:
+            risks.append("Elevated volatility may lead to unexpected price movements")
+        
+        if rsi > 75:
+            risks.append("Overbought conditions (RSI > 75) suggest potential pullback risk")
+        elif rsi < 25:
+            risks.append("Oversold conditions may indicate capitulation or further decline")
+        
+        if model_agreement < 0.6:
+            risks.append(f"Low model agreement ({model_agreement:.0%}) indicates forecast uncertainty")
+        
+        if abs(sentiment_score) < 0.1:
+            risks.append("Neutral sentiment provides limited directional conviction")
+        
+        if abs(price_change_24h) > 10:
+            risks.append(f"Large 24h move ({price_change_24h:+.1f}%) suggests elevated risk")
+        
+        # Always have at least 2-3 risks
+        if len(risks) < 2:
+            risks.append("Standard cryptocurrency market risks apply")
+        if len(risks) < 3:
+            risks.append("External market factors may impact price trajectory")
+        
+        return risks[:3]  # Return max 3 risks
+    
+    def _generate_reasoning(
+        self, recommendation, expected_roi, rsi, trend, bullish_score, bearish_score
+    ) -> str:
+        """Generate decision reasoning"""
+        
+        if recommendation == "BUY":
+            return f"Strong bullish signals (score: +{bullish_score-bearish_score}) with {expected_roi:+.1f}% forecast, {trend} trend, and RSI {rsi:.0f} support upside case"
+        
+        elif recommendation == "SELL":
+            return f"Bearish indicators (score: {bullish_score-bearish_score}) with {expected_roi:+.1f}% forecast, {trend} trend, and RSI {rsi:.0f} suggest downside risk"
+        
+        else:
+            return f"Mixed signals (score: {bullish_score-bearish_score}) with {expected_roi:+.1f}% forecast and RSI {rsi:.0f} warrant cautious approach"
+    
+    def _generate_key_factors(
+        self, expected_roi, model_agreement, rsi, trend, sentiment_score
+    ) -> List[str]:
+        """Generate key supporting factors"""
+        
+        factors = []
+        
+        factors.append(f"{model_agreement:.0%} model agreement indicates {'high' if model_agreement > 0.8 else 'moderate'} forecast reliability")
+        factors.append(f"{expected_roi:+.1f}% expected return over forecast period")
+        factors.append(f"RSI at {rsi:.0f} - {'oversold' if rsi < 30 else 'overbought' if rsi > 70 else 'neutral'} territory")
+        
+        if abs(sentiment_score) > 0.2:
+            factors.append(f"{'Positive' if sentiment_score > 0 else 'Negative'} sentiment shift supports thesis")
+        
+        factors.append(f"Price trend: {trend}")
+        
+        return factors[:3]  # Return top 3 factors
 
 
 # ============================================================================
@@ -337,7 +387,7 @@ Return ONLY JSON (no markdown).
 # ============================================================================
 
 def generate_insights(
-    api_key: str,
+    api_key: str,  # Not used, kept for compatibility
     coin_symbol: str,
     market_data: Dict,
     sentiment_data: Dict,
@@ -347,24 +397,35 @@ def generate_insights(
     horizon_days: int = 7
 ) -> Dict:
     """
-    Generate investment insights using Llama 3.1
-    
-    Raises exceptions if API fails (no fallback).
+    Generate investment insights using rule-based system
+    Perfect for Streamlit Cloud free tier (1GB RAM limit)
     """
-    try:
-        generator = LlamaInsightGenerator(api_key=api_key)
-        return generator.generate_insights(
-            coin_symbol=coin_symbol,
-            market_data=market_data,
-            sentiment_data=sentiment_data,
-            technical_indicators=technical_indicators,
-            prediction_data=prediction_data,
-            top_headlines=top_headlines,
-            horizon_days=horizon_days
-        )
-    except Exception as e:
-        logger.error(f"❌ Failed to generate insights: {e}")
-        raise
+    generator = RuleBasedInsightGenerator()
+    return generator.generate_insights(
+        coin_symbol=coin_symbol,
+        market_data=market_data,
+        sentiment_data=sentiment_data,
+        technical_indicators=technical_indicators,
+        prediction_data=prediction_data,
+        top_headlines=top_headlines,
+        horizon_days=horizon_days
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
