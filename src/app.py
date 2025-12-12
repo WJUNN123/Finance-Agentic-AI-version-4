@@ -1118,21 +1118,21 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             
             # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
-                # === NEW: Extract predictions from result and package for chart ===
+                # Extract ensemble predictions (the only ones available)
+                ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
+                
+                # Package prediction data
                 prediction_data = {
-                    'lstm': result.get('lstm_predictions', []),
-                    'xgboost': result.get('xgb_predictions', []),
-                    'ensemble': result.get('ensemble_predictions', [])
+                    'ensemble': ensemble_preds
                 }
                 
-                # === UPDATED: Pass prediction_data to chart function ===
                 create_enhanced_chart(
                     combined_df=combined_df,
                     market_data=market,
                     technical=technical,
                     coin_symbol=symbol,
                     horizon_days=horizon_days,
-                    prediction_data=prediction_data  # ✅ NEW PARAMETER
+                    prediction_data=prediction_data
                 )
             else:
                 st.info("Insufficient data for chart")
