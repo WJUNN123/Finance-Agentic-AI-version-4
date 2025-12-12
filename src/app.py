@@ -1118,35 +1118,35 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             
             # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
-            # Extract ensemble predictions
-            ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
-            
-            if ensemble_preds:
-                # Use min/max of forecast as support/resistance
-                min_forecast = min(ensemble_preds)
-                max_forecast = max(ensemble_preds)
+                # Extract ensemble predictions
+                ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
                 
-                # Add 2% buffer for better visualization
-                support_level = min_forecast * 0.98
-                resistance_level = max_forecast * 1.02
+                if ensemble_preds:
+                    # Use min/max of forecast as support/resistance
+                    min_forecast = min(ensemble_preds)
+                    max_forecast = max(ensemble_preds)
+                    
+                    # Add 2% buffer for better visualization
+                    support_level = min_forecast * 0.98
+                    resistance_level = max_forecast * 1.02
+                    
+                    # Override technical indicators with forecast-based levels
+                    technical['support'] = support_level
+                    technical['resistance'] = resistance_level
                 
-                # Override technical indicators with forecast-based levels
-                technical['support'] = support_level
-                technical['resistance'] = resistance_level
-            
-            # Package prediction data
-            prediction_data = {
-                'ensemble': ensemble_preds
-            }
-            
-            create_enhanced_chart(
-                combined_df=combined_df,
-                market_data=market,
-                technical=technical,
-                coin_symbol=symbol,
-                horizon_days=horizon_days,
-                prediction_data=prediction_data
-            )
+                # Package prediction data
+                prediction_data = {
+                    'ensemble': ensemble_preds
+                }
+                
+                create_enhanced_chart(
+                    combined_df=combined_df,
+                    market_data=market,
+                    technical=technical,
+                    coin_symbol=symbol,
+                    horizon_days=horizon_days,
+                    prediction_data=prediction_data
+                )
         else:
             st.info("Insufficient data for chart")
     else:
