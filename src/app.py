@@ -1147,8 +1147,8 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     horizon_days=horizon_days,
                     prediction_data=prediction_data
                 )
-        else:
-            st.info("Insufficient data for chart")
+            else:
+                st.info("Insufficient data for chart")
     else:
         st.info("No forecast data available")
 
