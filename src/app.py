@@ -1118,26 +1118,26 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             
             # STAGE 3: Enhanced chart with support/resistance
             if not combined_df.empty:
-                # === NEW: Package prediction data for dynamic support/resistance ===
+                # === NEW: Extract predictions from result and package for chart ===
                 prediction_data = {
-                    'lstm': lstm_preds,
-                    'xgboost': xgb_preds,
-                    'ensemble': ensemble_preds
+                    'lstm': result.get('lstm_predictions', []),
+                    'xgboost': result.get('xgb_predictions', []),
+                    'ensemble': result.get('ensemble_predictions', [])
                 }
                 
+                # === UPDATED: Pass prediction_data to chart function ===
                 create_enhanced_chart(
                     combined_df=combined_df,
                     market_data=market,
                     technical=technical,
                     coin_symbol=symbol,
                     horizon_days=horizon_days,
-                    prediction_data=prediction_data
+                    prediction_data=prediction_data  # ✅ NEW PARAMETER
                 )
             else:
                 st.info("Insufficient data for chart")
     else:
         st.info("No forecast data available")
-
 
 # ============================================================================
 # STAGE 3: ENHANCED ERROR DISPLAY (NEW)
