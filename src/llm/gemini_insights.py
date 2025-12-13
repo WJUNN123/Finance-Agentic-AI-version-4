@@ -137,12 +137,11 @@ class RuleBasedInsightGenerator:
     ) -> Dict:
         """Perform comprehensive multi-factor analysis with SAFETY CHECKS"""
         
-        # === SCORING SYSTEM ===
         bullish_score = 0
         bearish_score = 0
         factors = []
         
-        # 1. FORECAST ANALYSIS (Weight: 30%)
+        # 1. FORECAST ANALYSIS
         if expected_roi > 15:
             bullish_score += 3
             factors.append(f"Strong {expected_roi:+.1f}% forecast")
@@ -164,7 +163,7 @@ class RuleBasedInsightGenerator:
         elif expected_roi < 0:
             bearish_score += 1
         
-        # 2. MODEL CONFIDENCE (Weight: 20%)
+        # 2. MODEL CONFIDENCE
         if model_agreement > 0.9:
             confidence_boost = 2
             bullish_score += confidence_boost if expected_roi > 0 else 0
@@ -178,7 +177,7 @@ class RuleBasedInsightGenerator:
             bullish_score -= 1
             bearish_score -= 1
         
-        # 3. RSI ANALYSIS (Weight: 15%)
+        # 3. RSI ANALYSIS
         if rsi < 25:
             bullish_score += 2.5
             factors.append(f"Deeply oversold (RSI {rsi:.0f})")
@@ -196,7 +195,7 @@ class RuleBasedInsightGenerator:
         elif rsi > 60:
             bearish_score += 1
         
-        # 4. TREND ANALYSIS (Weight: 15%)
+        # 4. TREND ANALYSIS
         if trend == "strong_uptrend":
             bullish_score += 2.5
             factors.append("Strong uptrend momentum")
@@ -210,7 +209,7 @@ class RuleBasedInsightGenerator:
             bearish_score += 2
             factors.append("Downtrend pattern")
         
-        # 5. MACD SIGNALS (Weight: 10%)
+        # 5. MACD SIGNALS
         if macd > macd_signal and macd_histogram > 0:
             bullish_score += 1.5
             factors.append("Bullish MACD crossover")
@@ -218,7 +217,7 @@ class RuleBasedInsightGenerator:
             bearish_score += 1.5
             factors.append("Bearish MACD crossover")
         
-        # 6. STOCHASTIC OSCILLATOR (Weight: 10%)
+        # 6. STOCHASTIC OSCILLATOR
         if stoch_k < 20 and stoch_k > stoch_d:
             bullish_score += 1.5
             factors.append("Stochastic reversal signal")
@@ -226,7 +225,7 @@ class RuleBasedInsightGenerator:
             bearish_score += 1.5
             factors.append("Stochastic topping signal")
         
-        # 7. MOMENTUM (Weight: 10%)
+        # 7. MOMENTUM
         if momentum > 10:
             bullish_score += 1.5
             factors.append("Strong positive momentum")
@@ -238,7 +237,7 @@ class RuleBasedInsightGenerator:
         elif momentum < -5:
             bearish_score += 1
         
-        # 8. BOLLINGER BANDS (Weight: 5%)
+        # 8. BOLLINGER BANDS
         if bb_position < 0.15:
             bullish_score += 1
             factors.append("Price near lower Bollinger band")
@@ -246,7 +245,7 @@ class RuleBasedInsightGenerator:
             bearish_score += 1
             factors.append("Price near upper Bollinger band")
         
-        # 9. SENTIMENT (Weight: 10%)
+        # 9. SENTIMENT
         if sentiment_confidence > 0.7:
             if sentiment_score > 0.4:
                 bullish_score += 1.5
@@ -255,7 +254,7 @@ class RuleBasedInsightGenerator:
                 bearish_score += 1.5
                 factors.append(f"Strong negative sentiment ({neg_pct:.0f}%)")
         
-        # 10. RECENT PRICE ACTION (Weight: 5%)
+        # 10. RECENT PRICE ACTION
         if price_change_24h > 10:
             bullish_score += 1
         elif price_change_24h > 5:
@@ -265,7 +264,7 @@ class RuleBasedInsightGenerator:
         elif price_change_24h < -5:
             bearish_score += 0.5
         
-        # === INITIAL DECISION LOGIC ===
+        # === INITIAL DECISION ===
         net_score = bullish_score - bearish_score
         
         if net_score >= 5:
@@ -274,20 +273,20 @@ class RuleBasedInsightGenerator:
         elif net_score >= 3:
             recommendation = "BUY"
             confidence = min(0.80, 0.60 + (net_score * 0.04))
-        elif net_score <= -3:  # CHANGED: More aggressive SELL
+        elif net_score <= -3:
             recommendation = "SELL"
             confidence = min(0.85, 0.65 + (abs(net_score) * 0.04))
-        elif net_score <= -2:  # CHANGED: Easier to trigger SELL
+        elif net_score <= -2:
             recommendation = "SELL"
             confidence = min(0.75, 0.60 + (abs(net_score) * 0.04))
         else:
             recommendation = "HOLD"
             confidence = 0.50 + (abs(net_score) * 0.03)
         
-        # === SAFETY CHECKS (NEW) ===
+        # === SAFETY CHECKS ===
         safety_warnings = []
         
-        # Safety Check 1: Low Model Agreement Override
+        # Safety Check 1: Low Model Agreement
         if model_agreement < 0.60:
             logger.warning(f"⚠️ Low model agreement ({model_agreement:.0%}) - forcing HOLD")
             recommendation = "HOLD"
@@ -295,14 +294,14 @@ class RuleBasedInsightGenerator:
             safety_warnings.append(f"⚠️ Low model consensus ({model_agreement:.0%})")
             factors.insert(0, f"Low model agreement ({model_agreement:.0%}) reduces conviction")
         
-        # Safety Check 2: Minimal Forecast Override  
+        # Safety Check 2: Minimal Forecast
         if abs(expected_roi) < 2.0:
             logger.info(f"📊 Minimal forecast ({expected_roi:+.1f}%) - forcing HOLD")
             recommendation = "HOLD"
             confidence = min(confidence, 0.60)
             safety_warnings.append(f"Minimal {expected_roi:+.1f}% movement")
         
-        # Safety Check 3: Poor Risk-Adjusted Return
+        # Safety Check 3: Poor Risk/Reward
         if volatility > 0:
             risk_adj_return = expected_roi / (volatility * 100)
             if abs(risk_adj_return) < 0.8 and recommendation != "HOLD":
@@ -317,7 +316,7 @@ class RuleBasedInsightGenerator:
             confidence = confidence * 0.85
             safety_warnings.append("Conflicting trend signals")
         
-        # Safety Check 5: High Volatility with Low Conviction
+        # Safety Check 5: High Volatility + Low Agreement
         if volatility > 0.08 and model_agreement < 0.7:
             logger.warning("⚠️ High volatility with low model agreement")
             confidence = confidence * 0.90
@@ -548,6 +547,35 @@ def generate_insights(
         top_headlines=top_headlines,
         horizon_days=horizon_days
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
