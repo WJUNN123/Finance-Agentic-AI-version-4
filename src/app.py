@@ -195,6 +195,30 @@ def parse_user_message(message: str) -> Dict:
         'horizon_days': horizon_days
     }
 
+def calculate_model_agreement(lstm_preds, xgb_preds, ensemble_preds):
+    """Calculate agreement between LSTM and XGBoost models"""
+    if not (lstm_preds and xgb_preds and ensemble_preds):
+        return 0.5
+    
+    try:
+        lstm_final = float(lstm_preds[-1])
+        xgb_final = float(xgb_preds[-1])
+        ensemble_final = float(ensemble_preds[-1])
+        
+        if ensemble_final == 0:
+            return 0.5
+        
+        lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final)
+        xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final)
+        avg_diff = (lstm_diff + xgb_diff) / 2
+        agreement = max(0.3, min(1.0, 1.0 - avg_diff * 2))
+        
+        logger.info(f"📊 Model agreement: {agreement:.0%}")
+        return float(agreement)
+    except Exception as e:
+        logger.error(f"Error calculating model agreement: {e}")
+        return 0.5
+        
 # ============================================================================
 # STAGE 3: INPUT VALIDATION FUNCTIONS (NEW)
 # ============================================================================
@@ -434,11 +458,15 @@ def analyze_cryptocurrency(
         
         if API_KEYS.get('gemini'):
             try:
-                # Package data with confidence scores (STAGE 2)
+                # Calculate model agreement ONCE
+                model_agreement = calculate_model_agreement(lstm_preds, xgb_preds, ensemble_preds)
+                
+                # Package data with model agreement
                 prediction_data = {
                     'lstm': lstm_preds,
                     'xgboost': xgb_preds,
-                    'ensemble': ensemble_preds
+                    'ensemble': ensemble_preds,
+                    'model_agreement': model_agreement  # NEW
                 }
                 
                 sentiment_data = {
