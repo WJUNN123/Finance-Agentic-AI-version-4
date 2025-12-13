@@ -10,10 +10,10 @@ import random
 logger = logging.getLogger(__name__)
 
 class RuleBasedInsightGenerator:
-    """Enhanced rule-based insight generator with robust analysis"""
+    """Enhanced rule-based insight generator with robust analysis and safety checks"""
     
     def __init__(self):
-        logger.info("✅ Enhanced rule-based generator initialized")
+        logger.info("✅ Enhanced rule-based generator initialized (SAFE VERSION)")
     
     def generate_insights(
         self,
@@ -25,7 +25,7 @@ class RuleBasedInsightGenerator:
         top_headlines: List[str],
         horizon_days: int = 7
     ) -> Dict:
-        """Generate comprehensive investment insights"""
+        """Generate comprehensive investment insights with safety checks"""
         
         logger.info(f"🤖 Generating enhanced insights for {coin_symbol}...")
         
@@ -41,15 +41,15 @@ class RuleBasedInsightGenerator:
         lstm_preds = prediction_data.get('lstm', [])
         xgb_preds = prediction_data.get('xgboost', [])
         
+        # Get model agreement (passed from app.py)
+        model_agreement = prediction_data.get('model_agreement', 0.5)
+        
         # Calculate metrics
         expected_roi = 0
         predicted_price = current_price
         if ensemble_preds and current_price > 0:
             predicted_price = ensemble_preds[-1]
             expected_roi = ((predicted_price - current_price) / current_price) * 100
-        
-        # Model agreement
-        model_agreement = self._calculate_model_agreement(lstm_preds, xgb_preds, ensemble_preds)
         
         # Technical indicators
         rsi = technical_indicators.get('rsi', 50)
@@ -107,29 +107,6 @@ class RuleBasedInsightGenerator:
         
         return analysis_result
     
-    def _calculate_model_agreement(
-        self, 
-        lstm_preds: List, 
-        xgb_preds: List, 
-        ensemble_preds: List
-    ) -> float:
-        """Calculate model agreement score"""
-        if not (lstm_preds and xgb_preds and ensemble_preds):
-            return 0.5
-        
-        lstm_final = lstm_preds[-1]
-        xgb_final = xgb_preds[-1]
-        ensemble_final = ensemble_preds[-1]
-        
-        if ensemble_final == 0:
-            return 0.5
-        
-        lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final)
-        xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final)
-        avg_diff = (lstm_diff + xgb_diff) / 2
-        
-        return max(0.3, min(1.0, 1.0 - avg_diff * 2))
-    
     def _comprehensive_analysis(
         self,
         coin_symbol: str,
@@ -158,7 +135,7 @@ class RuleBasedInsightGenerator:
         horizon_days: int,
         headlines: List[str]
     ) -> Dict:
-        """Perform comprehensive multi-factor analysis"""
+        """Perform comprehensive multi-factor analysis with SAFETY CHECKS"""
         
         # === SCORING SYSTEM ===
         bullish_score = 0
@@ -288,7 +265,7 @@ class RuleBasedInsightGenerator:
         elif price_change_24h < -5:
             bearish_score += 0.5
         
-        # === DECISION LOGIC ===
+        # === INITIAL DECISION LOGIC ===
         net_score = bullish_score - bearish_score
         
         if net_score >= 5:
@@ -297,37 +274,72 @@ class RuleBasedInsightGenerator:
         elif net_score >= 3:
             recommendation = "BUY"
             confidence = min(0.80, 0.60 + (net_score * 0.04))
-        elif net_score <= -5:
+        elif net_score <= -3:  # CHANGED: More aggressive SELL
             recommendation = "SELL"
-            confidence = min(0.90, 0.65 + (abs(net_score) * 0.04))
-        elif net_score <= -3:
+            confidence = min(0.85, 0.65 + (abs(net_score) * 0.04))
+        elif net_score <= -2:  # CHANGED: Easier to trigger SELL
             recommendation = "SELL"
-            confidence = min(0.80, 0.60 + (abs(net_score) * 0.04))
+            confidence = min(0.75, 0.60 + (abs(net_score) * 0.04))
         else:
             recommendation = "HOLD"
             confidence = 0.50 + (abs(net_score) * 0.03)
         
-        # === GENERATE DETAILED ANALYSIS ===
+        # === SAFETY CHECKS (NEW) ===
+        safety_warnings = []
+        
+        # Safety Check 1: Low Model Agreement Override
+        if model_agreement < 0.60:
+            logger.warning(f"⚠️ Low model agreement ({model_agreement:.0%}) - forcing HOLD")
+            recommendation = "HOLD"
+            confidence = min(confidence, 0.55)
+            safety_warnings.append(f"⚠️ Low model consensus ({model_agreement:.0%})")
+            factors.insert(0, f"Low model agreement ({model_agreement:.0%}) reduces conviction")
+        
+        # Safety Check 2: Minimal Forecast Override  
+        if abs(expected_roi) < 2.0:
+            logger.info(f"📊 Minimal forecast ({expected_roi:+.1f}%) - forcing HOLD")
+            recommendation = "HOLD"
+            confidence = min(confidence, 0.60)
+            safety_warnings.append(f"Minimal {expected_roi:+.1f}% movement")
+        
+        # Safety Check 3: Poor Risk-Adjusted Return
+        if volatility > 0:
+            risk_adj_return = expected_roi / (volatility * 100)
+            if abs(risk_adj_return) < 0.8 and recommendation != "HOLD":
+                logger.info(f"⚠️ Poor risk/reward ({risk_adj_return:.2f}) - forcing HOLD")
+                recommendation = "HOLD"
+                confidence = min(confidence, 0.65)
+                safety_warnings.append(f"Risk/reward ({risk_adj_return:.2f}) unfavorable")
+        
+        # Safety Check 4: Conflicting Signals
+        if trend in ["downtrend", "strong_downtrend"] and expected_roi > 3:
+            logger.warning("⚠️ Conflicting: downtrend but bullish forecast")
+            confidence = confidence * 0.85
+            safety_warnings.append("Conflicting trend signals")
+        
+        # Safety Check 5: High Volatility with Low Conviction
+        if volatility > 0.08 and model_agreement < 0.7:
+            logger.warning("⚠️ High volatility with low model agreement")
+            confidence = confidence * 0.90
+        
+        # === GENERATE OUTPUTS ===
         analysis = self._generate_detailed_analysis(
             coin_symbol, recommendation, expected_roi, model_agreement,
             rsi, trend, sentiment_score, price_change_24h, bullish_score,
             bearish_score, horizon_days, factors[:3], volatility,
-            macd_histogram, stoch_k, bb_position
+            macd_histogram, stoch_k, bb_position, safety_warnings
         )
         
-        # === GENERATE RISKS ===
         risks = self._generate_comprehensive_risks(
             volatility, rsi, model_agreement, sentiment_score,
-            price_change_24h, expected_roi, liquidity_ratio
+            price_change_24h, expected_roi, liquidity_ratio, safety_warnings
         )
         
-        # === REASONING ===
         reasoning = self._generate_detailed_reasoning(
             recommendation, expected_roi, rsi, trend, bullish_score,
-            bearish_score, model_agreement, sentiment_score
+            bearish_score, model_agreement, sentiment_score, price_change_24h
         )
         
-        # === KEY FACTORS ===
         key_factors = factors[:4] if len(factors) >= 4 else factors
         
         return {
@@ -338,18 +350,17 @@ class RuleBasedInsightGenerator:
             "reasoning": reasoning,
             "key_factors": key_factors,
             "source": "advanced_rule_based",
-            "model": "multi_factor_v2"
+            "model": "multi_factor_v2_safe"
         }
     
     def _generate_detailed_analysis(
         self, coin_symbol, recommendation, expected_roi, model_agreement,
         rsi, trend, sentiment_score, price_change_24h, bullish_score,
         bearish_score, horizon_days, key_factors, volatility,
-        macd_histogram, stoch_k, bb_position
+        macd_histogram, stoch_k, bb_position, safety_warnings
     ) -> str:
         """Generate detailed natural language analysis"""
         
-        # Market condition
         if volatility > 0.10:
             vol_desc = "highly volatile"
         elif volatility > 0.05:
@@ -357,103 +368,62 @@ class RuleBasedInsightGenerator:
         else:
             vol_desc = "stable"
         
-        # Technical setup
         tech_strength = "strong" if abs(bullish_score - bearish_score) > 5 else "moderate"
         
+        if safety_warnings:
+            warning_text = " CRITICAL: " + "; ".join(safety_warnings) + ". "
+        else:
+            warning_text = ""
+        
         if recommendation == "BUY":
+            if price_change_24h < -2:
+                daily_context = f"Despite today's {price_change_24h:.1f}% pullback, "
+            elif price_change_24h > 2:
+                daily_context = f"Building on {price_change_24h:+.1f}% positive momentum, "
+            else:
+                daily_context = ""
+            
             templates = [
-                f"{coin_symbol} presents a compelling {tech_strength} bullish opportunity with {expected_roi:+.1f}% upside potential over {horizon_days} days. Technical analysis reveals {key_factors[0] if key_factors else 'positive signals'}, supported by {trend} momentum and RSI at {rsi:.0f} indicating room for appreciation. The {model_agreement:.0%} model consensus reinforces confidence in the forecast. Current market conditions are {vol_desc}, with recent {price_change_24h:+.1f}% price action confirming directional momentum.",
+                f"{coin_symbol} presents {tech_strength} bullish opportunity with {expected_roi:+.1f}% upside over {horizon_days} days. {warning_text}{daily_context}Technical analysis shows {key_factors[0] if key_factors else 'positive signals'}, supported by {trend} momentum and RSI {rsi:.0f} indicating room for appreciation. Model consensus of {model_agreement:.0%} reinforces forecast confidence in this {vol_desc} environment.",
                 
-                f"Analysis identifies {coin_symbol} as an attractive entry point with {expected_roi:+.1f}% expected return. Key bullish factors include {key_factors[0] if key_factors else 'favorable technicals'} and {trend} price structure. The RSI reading of {rsi:.0f} suggests healthy positioning without overbought concerns. With {model_agreement:.0%} model alignment and {vol_desc} market environment, risk-reward favors long positions at current levels.",
-                
-                f"{coin_symbol} demonstrates {tech_strength} bullish setup targeting {expected_roi:+.1f}% gains over {horizon_days}-day horizon. Technical confluence shows {key_factors[0] if key_factors else 'positive momentum'}, {trend} trajectory, and RSI {rsi:.0f} supporting upside thesis. The {model_agreement:.0%} model agreement and {price_change_24h:+.1f}% recent performance validate the bullish outlook in this {vol_desc} market phase."
+                f"Analysis identifies {coin_symbol} as attractive entry with {expected_roi:+.1f}% expected return. {warning_text}{daily_context}Key bullish factors include {key_factors[0] if key_factors else 'favorable technicals'} and {trend} price structure. RSI {rsi:.0f} suggests healthy positioning. With {model_agreement:.0%} model alignment and {vol_desc} conditions, risk-reward favors long positions.",
             ]
         
         elif recommendation == "SELL":
+            if price_change_24h > 2:
+                daily_context = f"Despite today's {price_change_24h:+.1f}% bounce, "
+            elif price_change_24h < -2:
+                daily_context = f"Accelerating from {price_change_24h:.1f}% decline, "
+            else:
+                daily_context = ""
+            
             templates = [
-                f"{coin_symbol} exhibits concerning {tech_strength} bearish signals with {expected_roi:+.1f}% downside risk over {horizon_days} days. Technical deterioration evident through {key_factors[0] if key_factors else 'negative signals'}, {trend} momentum, and RSI at {rsi:.0f} indicating vulnerability. The {model_agreement:.0%} model consensus supports defensive positioning. In this {vol_desc} environment with {price_change_24h:+.1f}% recent decline, capital preservation takes priority.",
+                f"{coin_symbol} exhibits {tech_strength} bearish pressure with {expected_roi:+.1f}% downside risk over {horizon_days} days. {warning_text}{daily_context}Technical deterioration: {key_factors[0] if key_factors else 'negative signals'}, {trend} momentum, RSI {rsi:.0f} vulnerability. Model consensus {model_agreement:.0%} supports defensive positioning in this {vol_desc} environment.",
                 
-                f"Analysis warns of {tech_strength} bearish pressure on {coin_symbol} with {expected_roi:+.1f}% projected decline. Critical factors include {key_factors[0] if key_factors else 'weakening technicals'} and {trend} breakdown. RSI {rsi:.0f} signals potential further weakness ahead. Given {model_agreement:.0%} model alignment and {vol_desc} market conditions, reducing exposure is prudent to limit downside participation.",
-                
-                f"{coin_symbol} faces {tech_strength} headwinds suggesting {expected_roi:+.1f}% downside over {horizon_days}-day period. Technical analysis shows {key_factors[0] if key_factors else 'deteriorating momentum'}, {trend} pattern, and elevated RSI at {rsi:.0f}. With {model_agreement:.0%} model consensus and {price_change_24h:+.1f}% recent weakness in {vol_desc} markets, defensive strategies are warranted."
+                f"Analysis warns of {tech_strength} bearish setup for {coin_symbol} with {expected_roi:+.1f}% projected decline. {warning_text}{daily_context}Critical factors: {key_factors[0] if key_factors else 'weakening technicals'}, {trend} breakdown, RSI {rsi:.0f} signaling further weakness. {model_agreement:.0%} model alignment suggests reducing exposure.",
             ]
         
         else:  # HOLD
+            if model_agreement < 0.6:
+                hold_reason = f"low model agreement ({model_agreement:.0%}) creates high uncertainty"
+            elif abs(expected_roi) < 2:
+                hold_reason = f"minimal {expected_roi:+.1f}% forecast offers limited opportunity"
+            elif volatility > 0.08:
+                hold_reason = f"elevated volatility ({volatility:.1%}) increases risk"
+            else:
+                hold_reason = "mixed technical signals warrant caution"
+            
             templates = [
-                f"{coin_symbol} presents mixed technical signals warranting a cautious stance. The {expected_roi:+.1f}% forecast over {horizon_days} days suggests limited directional conviction, with RSI at {rsi:.0f} and {trend} momentum providing conflicting guidance. While {model_agreement:.0%} model agreement offers moderate confidence, the {vol_desc} market environment and {price_change_24h:+.1f}% recent action favor patience over commitment. Wait for clearer technical resolution before establishing new positions.",
+                f"{coin_symbol} presents balanced forces with {expected_roi:+.1f}% forecast warranting cautious stance. {warning_text}The {hold_reason}. RSI {rsi:.0f} and {trend} structure provide conflicting guidance. Wait for clearer directional confirmation with {model_agreement:.0%} model consensus before committing capital in this {vol_desc} environment.",
                 
-                f"Analysis on {coin_symbol} indicates balanced forces with {expected_roi:+.1f}% projected move offering limited risk-reward clarity. Technical indicators show {key_factors[0] if key_factors else 'neutral signals'} and {trend} structure, while RSI {rsi:.0f} sits in neutral territory. The {model_agreement:.0%} model consensus and {vol_desc} conditions suggest maintaining current positions rather than initiating new trades until stronger directional cues emerge.",
-                
-                f"{coin_symbol} consolidates with {expected_roi:+.1f}% forecast suggesting sideways action over {horizon_days} days. Mixed technicals - RSI {rsi:.0f}, {trend} pattern, and {key_factors[0] if key_factors else 'conflicting signals'} - recommend patience. In this {vol_desc} environment following {price_change_24h:+.1f}% recent move, await confirmation from {model_agreement:.0%} aligned models before tactical decisions."
+                f"Analysis on {coin_symbol} indicates {hold_reason} with {expected_roi:+.1f}% projected move. {warning_text}Technical indicators show {key_factors[0] if key_factors else 'neutral signals'} and {trend} structure. RSI {rsi:.0f} sits in neutral territory. The {model_agreement:.0%} model consensus suggests maintaining current positions rather than new trades.",
             ]
         
         return random.choice(templates)
     
-    def _generate_comprehensive_risks(
-        self, volatility, rsi, model_agreement, sentiment_score,
-        price_change_24h, expected_roi, liquidity_ratio
-    ) -> List[str]:
-        """Generate comprehensive risk assessment"""
-        
-        risks = []
-        
-        # Volatility risks
-        if volatility > 0.15:
-            risks.append(f"Extreme volatility ({volatility:.1%}) significantly increases position risk and potential slippage")
-        elif volatility > 0.10:
-            risks.append(f"High volatility ({volatility:.1%}) may cause sharp intraday price swings")
-        elif volatility > 0.05:
-            risks.append(f"Elevated volatility ({volatility:.1%}) suggests increased market uncertainty")
-        
-        # Technical risks
-        if rsi > 80:
-            risks.append(f"Severely overbought (RSI {rsi:.0f}) indicates high reversal risk")
-        elif rsi > 75:
-            risks.append(f"Overbought conditions (RSI {rsi:.0f}) suggest potential pullback")
-        elif rsi < 20:
-            risks.append(f"Deeply oversold (RSI {rsi:.0f}) may indicate capitulation or further decline")
-        elif rsi < 25:
-            risks.append(f"Oversold (RSI {rsi:.0f}) could lead to continued weakness")
-        
-        # Model uncertainty
-        if model_agreement < 0.6:
-            risks.append(f"Low model agreement ({model_agreement:.0%}) indicates elevated forecast uncertainty")
-        elif model_agreement < 0.7:
-            risks.append(f"Moderate model divergence ({model_agreement:.0%}) suggests reduced confidence")
-        
-        # Sentiment risks
-        if abs(sentiment_score) < 0.1 and len(risks) < 3:
-            risks.append("Neutral sentiment provides limited directional conviction")
-        
-        # Liquidity risks
-        if liquidity_ratio < 2:
-            risks.append(f"Low liquidity ({liquidity_ratio:.1f}%) may impact execution quality")
-        
-        # Price action risks
-        if abs(price_change_24h) > 15:
-            risks.append(f"Extreme 24h volatility ({price_change_24h:+.1f}%) increases short-term risk")
-        
-        # Forecast magnitude risks
-        if abs(expected_roi) > 20:
-            risks.append(f"Large forecast move ({expected_roi:+.1f}%) carries elevated execution risk")
-        
-        # Always ensure 3 risks
-        while len(risks) < 3:
-            default_risks = [
-                "Cryptocurrency markets remain subject to regulatory developments",
-                "External macroeconomic factors may override technical signals",
-                "Market microstructure changes could impact price action",
-                "Correlation with broader crypto market may affect independent movement"
-            ]
-            for risk in default_risks:
-                if risk not in risks and len(risks) < 3:
-                    risks.append(risk)
-        
-        return risks[:3]
-    
     def _generate_detailed_reasoning(
         self, recommendation, expected_roi, rsi, trend, bullish_score,
-        bearish_score, model_agreement, sentiment_score
+        bearish_score, model_agreement, sentiment_score, price_change_24h
     ) -> str:
         """Generate detailed reasoning explanation"""
         
@@ -461,20 +431,100 @@ class RuleBasedInsightGenerator:
         
         if recommendation == "BUY":
             strength = "Strong" if net_score >= 5 else "Moderate"
-            return (f"{strength} bullish case (score: +{net_score:.1f}) driven by {expected_roi:+.1f}% "
-                   f"forecast, {trend} momentum, RSI {rsi:.0f} positioning, and {model_agreement:.0%} "
-                   f"model consensus. Sentiment {'supports' if sentiment_score > 0 else 'neutral on'} the thesis.")
+            
+            if price_change_24h < -2:
+                daily_note = f"Despite {price_change_24h:.1f}% pullback, "
+            elif price_change_24h > 2:
+                daily_note = f"Positive {price_change_24h:+.1f}% momentum and "
+            else:
+                daily_note = ""
+            
+            return (f"{strength} bullish case (score: +{net_score:.1f}). {daily_note}"
+                   f"{expected_roi:+.1f}% forecast supported by {trend} structure, "
+                   f"RSI {rsi:.0f} positioning, and {model_agreement:.0%} model consensus.")
         
         elif recommendation == "SELL":
             strength = "Strong" if abs(net_score) >= 5 else "Moderate"
-            return (f"{strength} bearish case (score: {net_score:.1f}) indicated by {expected_roi:+.1f}% "
-                   f"downside forecast, {trend} pressure, RSI {rsi:.0f} vulnerability, and {model_agreement:.0%} "
-                   f"model alignment. Sentiment {'confirms' if sentiment_score < 0 else 'neutral on'} risk.")
+            
+            if price_change_24h > 2:
+                daily_note = f"Despite {price_change_24h:+.1f}% bounce, "
+            elif price_change_24h < -2:
+                daily_note = f"Accelerating {price_change_24h:.1f}% decline confirms "
+            else:
+                daily_note = ""
+            
+            return (f"{strength} bearish case (score: {net_score:.1f}). {daily_note}"
+                   f"{expected_roi:+.1f}% downside forecast indicated by {trend} pressure, "
+                   f"RSI {rsi:.0f} vulnerability, and {model_agreement:.0%} model alignment.")
         
         else:
-            return (f"Balanced signals (score: {net_score:+.1f}) with {expected_roi:+.1f}% forecast, "
-                   f"RSI {rsi:.0f} neutral positioning, and {trend} structure suggest awaiting clearer "
-                   f"directional confirmation. {model_agreement:.0%} model consensus offers moderate guidance.")
+            if model_agreement < 0.6:
+                hold_reason = f"low model agreement ({model_agreement:.0%}) creates uncertainty"
+            elif abs(expected_roi) < 2:
+                hold_reason = f"minimal {expected_roi:+.1f}% forecast lacks conviction"
+            else:
+                hold_reason = f"mixed signals (score: {net_score:+.1f})"
+            
+            return (f"Neutral stance warranted due to {hold_reason}. "
+                   f"RSI {rsi:.0f} neutral, {trend} structure, {price_change_24h:+.1f}% recent move. "
+                   f"Await clearer directional confirmation.")
+    
+    def _generate_comprehensive_risks(
+        self, volatility, rsi, model_agreement, sentiment_score,
+        price_change_24h, expected_roi, liquidity_ratio, safety_warnings
+    ) -> List[str]:
+        """Generate comprehensive risk assessment"""
+        
+        risks = []
+        
+        if safety_warnings:
+            for warning in safety_warnings[:2]:
+                if warning not in risks:
+                    risks.append(warning)
+        
+        if volatility > 0.15:
+            risks.append(f"Extreme volatility ({volatility:.1%}) significantly increases position risk")
+        elif volatility > 0.10:
+            risks.append(f"High volatility ({volatility:.1%}) may cause sharp price swings")
+        elif volatility > 0.05 and len(risks) < 3:
+            risks.append(f"Elevated volatility ({volatility:.1%}) suggests increased uncertainty")
+        
+        if rsi > 80:
+            risks.append(f"Severely overbought (RSI {rsi:.0f}) indicates high reversal risk")
+        elif rsi > 75 and len(risks) < 3:
+            risks.append(f"Overbought conditions (RSI {rsi:.0f}) suggest potential pullback")
+        elif rsi < 20:
+            risks.append(f"Deeply oversold (RSI {rsi:.0f}) may indicate capitulation risk")
+        elif rsi < 25 and len(risks) < 3:
+            risks.append(f"Oversold (RSI {rsi:.0f}) could lead to continued weakness")
+        
+        if model_agreement < 0.6 and len(risks) < 3:
+            if f"Low model consensus ({model_agreement:.0%})" not in str(risks):
+                risks.append(f"Low model agreement ({model_agreement:.0%}) indicates forecast uncertainty")
+        elif model_agreement < 0.7 and len(risks) < 3:
+            risks.append(f"Moderate model divergence ({model_agreement:.0%}) reduces confidence")
+        
+        if abs(sentiment_score) < 0.1 and len(risks) < 3:
+            risks.append("Neutral sentiment provides limited directional conviction")
+        
+        if liquidity_ratio < 1.0 and len(risks) < 3:
+            risks.append(f"Low liquidity ({liquidity_ratio:.1f}%) may impact execution quality")
+        
+        if abs(price_change_24h) > 15 and len(risks) < 3:
+            risks.append(f"Extreme 24h volatility ({price_change_24h:+.1f}%) increases short-term risk")
+        
+        while len(risks) < 3:
+            default_risks = [
+                "Cryptocurrency markets remain subject to regulatory developments",
+                "External macroeconomic factors may override technical signals",
+                "Market microstructure changes could impact price action"
+            ]
+            for risk in default_risks:
+                if risk not in risks and len(risks) < 3:
+                    risks.append(risk)
+                    break
+        
+        return risks[:3]
 
 
 def generate_insights(
@@ -487,7 +537,7 @@ def generate_insights(
     top_headlines: List[str],
     horizon_days: int = 7
 ) -> Dict:
-    """Generate enhanced investment insights"""
+    """Generate investment insights using rule-based system"""
     generator = RuleBasedInsightGenerator()
     return generator.generate_insights(
         coin_symbol=coin_symbol,
@@ -498,8 +548,6 @@ def generate_insights(
         top_headlines=top_headlines,
         horizon_days=horizon_days
     )
-
-
 
 
 
