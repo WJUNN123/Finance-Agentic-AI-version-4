@@ -182,6 +182,7 @@ class SentimentAnalyzer:
     def get_sentiment_confidence(self, analyses: List[Dict]) -> float:
         """
         Calculate confidence in sentiment prediction based on agreement
+        FIXED: Penalize high neutral percentage (uninformative data)
         
         Args:
             analyses: List of sentiment analysis results
@@ -195,6 +196,18 @@ class SentimentAnalyzer:
         # Get sentiment values and model confidence scores
         values = [a['value'] for a in analyses]
         scores = [a['score'] for a in analyses]
+        
+        # NEW: Check for high neutral percentage (uninformative)
+        neutral_count = sum(1 for v in values if abs(v) < 0.1)
+        neutral_pct = neutral_count / len(values)
+        
+        # CRITICAL FIX: Heavily penalize high neutral percentage
+        if neutral_pct > 0.8:  # 80%+ neutral = mostly uninformative
+            logger.debug(f"⚠️ High neutral percentage ({neutral_pct:.0%}) - low confidence")
+            return 0.30  # Very low confidence
+        elif neutral_pct > 0.6:  # 60%+ neutral = somewhat uninformative
+            logger.debug(f"⚠️ Moderate neutral percentage ({neutral_pct:.0%}) - reduced confidence")
+            return 0.50  # Medium-low confidence
         
         # Average model confidence
         avg_model_confidence = np.mean(scores)
@@ -218,7 +231,8 @@ class SentimentAnalyzer:
             sample_size_factor * 0.2
         )
         
-        logger.debug(f"🎯 Sentiment confidence: {confidence:.3f} (model: {avg_model_confidence:.2f}, agreement: {agreement_score:.2f}, samples: {len(analyses)})")
+        logger.debug(f"🎯 Sentiment confidence: {confidence:.3f} (model: {avg_model_confidence:.2f}, "
+                    f"agreement: {agreement_score:.2f}, samples: {len(analyses)}, neutral: {neutral_pct:.0%})")
         
         return float(confidence)
         
