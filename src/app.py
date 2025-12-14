@@ -1158,9 +1158,9 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
     """
-    TRUE full-width layout - REARRANGED
-    Row 1: BTC + Decision + Key Metrics
-    Row 2: Chart (left) | Analysis + Risks + Actions (right)
+    Rearranged full-width layout:
+    - Row 1: BTC + Decision + Key Metrics (all in header)
+    - Row 2: Chart (left) | Analysis + Risks + Actions (right)
     """
     
     if 'error' in result:
@@ -1226,11 +1226,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     pos_pct = sentiment_breakdown.get('positive', 0)
     neg_pct = sentiment_breakdown.get('negative', 0)
     
-    # Get technical indicators for sidebar
-    rsi = technical.get('rsi', 50)
-    trend = technical.get('trend', 'sideways')
-    volatility = technical.get('volatility', 0)
-    
     # ========================================================================
     # FULL WIDTH CSS
     # ========================================================================
@@ -1263,7 +1258,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # ROW 1: HEADER - BTC + DECISION + KEY METRICS (CHANGED FROM 2 TO 3 COLUMNS)
+    # ROW 1: HEADER BAR - BTC + DECISION + KEY METRICS
     # ========================================================================
     st.markdown(f"""
     <div style="
@@ -1333,11 +1328,11 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
                     Volatility
                 </div>
-                <div style="font-size: 20px; font-weight: 700; color: {'#ef4444' if volatility > 0.08 else '#f59e0b' if volatility > 0.05 else '#10b981'};">
-                    {volatility*100:.1f}%
+                <div style="font-size: 20px; font-weight: 700; color: {'#ef4444' if technical.get('volatility', 0) > 0.08 else '#f59e0b' if technical.get('volatility', 0) > 0.05 else '#10b981'};">
+                    {technical.get('volatility', 0)*100:.1f}%
                 </div>
                 <div style="font-size: 11px; color: #64748b;">
-                    {'High' if volatility > 0.08 else 'Medium' if volatility > 0.05 else 'Low'}
+                    {'High' if technical.get('volatility', 0) > 0.08 else 'Medium' if technical.get('volatility', 0) > 0.05 else 'Low'}
                 </div>
             </div>
         </div>
@@ -1354,9 +1349,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     with chart_col:
         st.markdown("### 📈 Price Forecast & Chart")
         
+        # Create chart
         history_df = result.get('history')
+        
         fig = go.Figure()
         
+        # Add history
         if history_df is not None and not history_df.empty and 'price' in history_df.columns:
             hist_series = history_df['price'].tail(90)
             fig.add_trace(go.Scatter(
@@ -1367,6 +1365,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 hovertemplate='<b>%{x}</b><br>$%{y:,.2f}<extra></extra>'
             ))
         
+        # Add forecast
         if forecast_table:
             forecast_dates = [row['date'] for row in forecast_table]
             forecast_values = [row.get('ensemble') for row in forecast_table]
@@ -1379,6 +1378,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 hovertemplate='<b>%{x}</b><br>$%{y:,.2f}<extra></extra>'
             ))
             
+            # Support/Resistance
             if ensemble_preds:
                 min_forecast = min(ensemble_preds)
                 max_forecast = max(ensemble_preds)
@@ -1446,7 +1446,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     with sidebar_col:
-        # AI Analysis (MOVED FROM BOTTOM)
+        # AI Analysis
         st.markdown("### 🤖 AI Analysis")
         
         insight_text = insights.get('insight', 'Analysis unavailable')
@@ -1466,7 +1466,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         </div>
         """, unsafe_allow_html=True)
         
-        # Key Risks (MOVED FROM BOTTOM)
+        # Key Risks
         st.markdown("### ⚠️ Key Risks")
         
         if insights.get('risks'):
@@ -1488,7 +1488,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 </div>
                 """, unsafe_allow_html=True)
         
-        # Action Plan (MOVED FROM BOTTOM)
+        # Action Plan
         st.markdown("### ✅ Action Plan")
         
         if rec_text == "BUY":
@@ -1525,7 +1525,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             </div>
             """, unsafe_allow_html=True)
         
-        # Position Info
+        # Position sizing
         sentiment_emoji = "📈" if pos_pct > 50 else "📉" if neg_pct > 50 else "⚪"
         st.markdown(f"""
         <div style="background: #1e293b; border-radius: 10px; padding: 18px;">
@@ -1542,40 +1542,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     st.markdown("---")
     st.caption(f"⚠️ Analysis: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')} • "
               f"Confidence: {confidence:.0%} • Educational purposes only")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
