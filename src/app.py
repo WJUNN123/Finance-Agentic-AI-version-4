@@ -905,403 +905,287 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 # ============================================================================
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
-    """
-    Left-to-right horizontal flow layout
-    User reads from left side to right side naturally
-    """
+    """Render the main summary dashboard with left-to-right layout"""
     
-    if 'error' in result:
-        st.error(f"❌ {result['error']}")
-        if 'suggestion' in result:
-            st.info(f"💡 {result['suggestion']}")
-        return
-    
-    # Extract data
     market = result['market']
     technical = result['technical']
+    sentiment_breakdown = result['sentiment_breakdown']
     insights = result['insights']
-    forecast_table = result['forecast_table']
     
-    coin_symbol = market['symbol']
-    current_price = market['price_usd']
-    price_change_24h = market['pct_change_24h']
+    # Extract data
+    coin_name = result['coin_info']['name']
+    symbol = market['symbol']
+    price = market['price_usd']
+    pct_24h = market['pct_change_24h']
+    pct_7d = market['pct_change_7d']
+    market_cap = market['market_cap']
+    volume = market['volume_24h']
+    rsi = technical['rsi']
     
-    # Get recommendation
-    recommendation = insights['recommendation']
-    confidence = insights['score']
-    
-    if "BUY" in recommendation.upper():
-        rec_color = "#10b981"
-        rec_emoji = "🟢"
-        rec_text = "BUY"
-    elif "SELL" in recommendation.upper():
-        rec_color = "#ef4444"
-        rec_emoji = "🔴"
-        rec_text = "SELL"
+    # Recommendation styling
+    rec_text = insights.get('recommendation', 'HOLD / WAIT').upper().strip()
+    if "BUY" in rec_text:
+        rec_label, rec_emoji, rec_color = "BUY", "🟢", "#16a34a"
+    elif "SELL" in rec_text:
+        rec_label, rec_emoji, rec_color = "SELL / AVOID", "🔴", "#ef4444"
     else:
-        rec_color = "#f59e0b"
-        rec_emoji = "🟡"
-        rec_text = "HOLD"
-    
-    # Calculate forecast
-    ensemble_pred = forecast_table[-1]['ensemble'] if forecast_table else current_price
-    roi_pct = ((ensemble_pred - current_price) / current_price * 100) if current_price > 0 else 0
-    
-    # Get model agreement
-    pred_data = result.get('predictions', {})
-    lstm_preds = pred_data.get('lstm', [])
-    xgb_preds = pred_data.get('xgboost', [])
-    ensemble_preds = pred_data.get('ensemble', [])
-    
-    if lstm_preds and xgb_preds and ensemble_preds:
-        lstm_final = lstm_preds[-1]
-        xgb_final = xgb_preds[-1]
-        ensemble_final = ensemble_preds[-1]
-        if ensemble_final != 0:
-            lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final)
-            xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final)
-            avg_diff = (lstm_diff + xgb_diff) / 2
-            model_agreement = max(0.3, min(1.0, 1.0 - avg_diff * 2))
-        else:
-            model_agreement = 0.5
-    else:
-        model_agreement = 0.5
-    
-    # Get sentiment
-    sentiment_breakdown = result.get('sentiment_breakdown', {})
-    sentiment_confidence = result.get('sentiment_confidence', 0.5)
-    pos_pct = sentiment_breakdown.get('positive', 0)
-    neg_pct = sentiment_breakdown.get('negative', 0)
+        rec_label, rec_emoji, rec_color = "HOLD / WAIT", "🟡", "#f59e0b"
     
     # ========================================================================
-    # CSS - FULL WIDTH
+    # FULL WIDTH CSS - ADD THIS
     # ========================================================================
     st.markdown("""
     <style>
     .main .block-container {
         max-width: 100% !important;
-        width: 100% !important;
         padding-left: 3% !important;
         padding-right: 3% !important;
-        padding-top: 1rem !important;
     }
-    
-    [data-testid="column"] {
-        padding: 0 10px !important;
-    }
-    
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # LAYOUT: 3 MAIN SECTIONS (LEFT TO RIGHT)
+    # HEADER SECTION - Keep as is
     # ========================================================================
+    st.markdown(f"### 📊 {coin_name} ({symbol})")
     
-    # Section 1: DECISION + CHART/METRICS (Left 50%)
-    # Section 2: ANALYSIS/RISKS/ACTION (Right 50%)
+    cols = st.columns([1.5, 1.2, 1.2, 1.2])
     
-    left_section, right_section = st.columns([1, 1], gap="large")
-    
-    # ========================================================================
-    # LEFT SECTION: DECISION BAR + CHART + METRICS
-    # ========================================================================
-    with left_section:
-        # Decision Bar
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, {rec_color}20 0%, transparent 100%);
-            border-left: 6px solid {rec_color};
-            border-radius: 12px;
-            padding: 24px 32px;
-            margin-bottom: 24px;
-        ">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <h1 style="margin: 0; font-size: 32px; color: #f1f5f9; font-weight: 700;">
-                        {coin_symbol}
-                    </h1>
-                    <div style="margin-top: 8px;">
-                        <span style="font-size: 36px; font-weight: 700; color: #f1f5f9;">
-                            ${current_price:,.2f}
-                        </span>
-                        <span style="font-size: 16px; font-weight: 600; color: {'#ef4444' if price_change_24h < 0 else '#10b981'}; margin-left: 12px;">
-                            {price_change_24h:+.2f}% • 24h
-                        </span>
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <div style="display: flex; align-items: center; gap: 16px;">
-                        <span style="font-size: 56px; line-height: 1;">{rec_emoji}</span>
-                        <div>
-                            <h2 style="margin: 0; font-size: 40px; font-weight: 700; color: {rec_color}; line-height: 1;">
-                                {rec_text}
-                            </h2>
-                            <p style="margin: 4px 0 0 0; color: #94a3b8; font-size: 14px;">
-                                {confidence:.0%} Confidence • {horizon_days}-Day
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    with cols[0]:
+        st.markdown("**Price**")
+        st.markdown(f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>", unsafe_allow_html=True)
         
-        # Chart
-        st.markdown("### 📈 Price Forecast & Chart")
+        if not pd.isna(pct_24h):
+            arrow = "🔺" if pct_24h >= 0 else "🔻"
+            color = "#2ecc71" if pct_24h >= 0 else "#e74c3c"
+            st.markdown(
+                f"<span style='padding:4px 8px;border-radius:999px;background:{color}22;"
+                f"color:{color};font-weight:700'>{arrow} {pct_24h:.2f}% · 24h</span>",
+                unsafe_allow_html=True
+            )
         
+        st.markdown(
+            f"<span style='display:inline-block;margin-top:8px;padding:6px 12px;"
+            f"border-radius:12px;background:{rec_color}22;color:{rec_color};"
+            f"font-weight:800;font-size:1.0rem'>{rec_emoji} {rec_label}</span>",
+            unsafe_allow_html=True
+        )
+    
+    with cols[1]:
+        st.metric("Market Cap", format_money(market_cap))
+        st.metric("24h Volume", format_money(volume))
+    
+    with cols[2]:
+        pct_7d_display = f"{pct_7d:+.2f}%" if not pd.isna(pct_7d) else "—"
+        st.metric("7d Change", pct_7d_display)
+        
+        rsi_display = f"{rsi:.1f} ({get_rsi_zone(rsi)})" if not pd.isna(rsi) else "—"
+        st.metric("RSI (14)", rsi_display)
+    
+    with cols[3]:
+        st.write("**Quick Info**")
+        
+        if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
+            liq_pct = (volume / market_cap) * 100
+            liq_icon = "🟢" if liq_pct > 10 else "🟡" if liq_pct > 5 else "🔴"
+            st.caption(f"{liq_icon} Liquidity: {liq_pct:.1f}%")
+        
+        st.caption(f"📊 {get_rsi_zone(rsi)}")
+        
+        trend_icon = "📈" if technical.get('trend') == 'uptrend' else "📉" if technical.get('trend') == 'downtrend' else "〰️"
+        st.caption(f"{trend_icon} Trend: {technical.get('trend', 'N/A').title()}")
+    
+    # Enhanced dashboard sections
+    render_enhanced_dashboard_sections(result, market, technical)
+    
+    st.divider()
+    
+    # ========================================================================
+    # LEFT-TO-RIGHT LAYOUT: CHART + INSIGHTS
+    # REPLACE THE OLD INSIGHTS SECTION WITH THIS
+    # ========================================================================
+    
+    # Create 2 main columns: Left (Chart + Metrics) | Right (Analysis + Risks + Actions)
+    left_col, right_col = st.columns([1, 1], gap="large")
+    
+    # ========================================================================
+    # LEFT COLUMN: CHART + METRICS
+    # ========================================================================
+    with left_col:
+        st.subheader(f"🎯 {horizon_days}-Day Price Forecast")
+        
+        forecast_table = result['forecast_table']
         history_df = result.get('history')
-        fig = go.Figure()
-        
-        if history_df is not None and not history_df.empty and 'price' in history_df.columns:
-            hist_series = history_df['price'].tail(90)
-            fig.add_trace(go.Scatter(
-                x=hist_series.index,
-                y=hist_series.values,
-                name='History',
-                line=dict(color='#3b82f6', width=3),
-                hovertemplate='$%{y:,.2f}<extra></extra>'
-            ))
         
         if forecast_table:
-            forecast_dates = [row['date'] for row in forecast_table]
-            forecast_values = [row.get('ensemble') for row in forecast_table]
+            # Create combined chart
+            combined_df = pd.DataFrame()
             
-            fig.add_trace(go.Scatter(
-                x=forecast_dates,
-                y=forecast_values,
-                name='Forecast',
-                line=dict(color='#ef4444', width=3, dash='dash'),
-                hovertemplate='$%{y:,.2f}<extra></extra>'
-            ))
+            if history_df is not None and not history_df.empty and 'price' in history_df.columns:
+                hist_series = history_df['price'].tail(90)
+                combined_df['History'] = hist_series
             
-            if ensemble_preds:
-                min_forecast = min(ensemble_preds)
-                max_forecast = max(ensemble_preds)
+            forecast_rows = []
+            for row in forecast_table:
+                date = row['date']
+                date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
+                ensemble = row.get('ensemble')
+                forecast_rows.append({
+                    'Date': date_str,
+                    'Forecast ($)': ensemble if ensemble is not None else None
+                })
+            
+            df_forecast = pd.DataFrame(forecast_rows).set_index('Date')
+            
+            if not df_forecast.empty:
+                forecast_series = df_forecast['Forecast ($)'].astype(float)
+                forecast_series.index = pd.to_datetime(forecast_series.index)
+                combined_df = pd.concat([combined_df, forecast_series.rename('Forecast')])
+            
+            # Enhanced chart with support/resistance
+            if not combined_df.empty:
+                ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
                 
-                fig.add_hline(y=min_forecast*0.98, line_dash="dot", line_color="#10b981", line_width=2,
-                             annotation_text="Support", annotation_position="left")
-                fig.add_hline(y=max_forecast*1.02, line_dash="dot", line_color="#f59e0b", line_width=2,
-                             annotation_text="Resistance", annotation_position="left")
+                if ensemble_preds:
+                    min_forecast = min(ensemble_preds)
+                    max_forecast = max(ensemble_preds)
+                    support_level = min_forecast * 0.98
+                    resistance_level = max_forecast * 1.02
+                    technical['support'] = support_level
+                    technical['resistance'] = resistance_level
+                
+                prediction_data = {'ensemble': ensemble_preds}
+                
+                create_enhanced_chart(
+                    combined_df=combined_df,
+                    market_data=market,
+                    technical=technical,
+                    coin_symbol=symbol,
+                    horizon_days=horizon_days,
+                    prediction_data=prediction_data
+                )
+            
+            # Forecast table below chart
+            st.dataframe(
+                df_forecast.style.format({'Forecast ($)': '${:,.2f}'}),
+                use_container_width=True,
+                height=250
+            )
+        else:
+            st.info("No forecast data available")
+    
+    # ========================================================================
+    # RIGHT COLUMN: AI ANALYSIS + RISKS + ACTIONS
+    # ========================================================================
+    with right_col:
+        st.subheader("✅ AI-Powered Insights & Risk Assessment")
         
-        fig.update_layout(
-            height=350,
-            margin=dict(l=5, r=5, t=20, b=5),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(30,41,59,0.4)',
-            xaxis=dict(showgrid=False, color='#94a3b8', tickfont=dict(size=11)),
-            yaxis=dict(showgrid=True, gridcolor='#334155', color='#94a3b8', 
-                      tickfont=dict(size=11), tickformat='$,.0f'),
-            legend=dict(orientation="h", yanchor="top", y=-0.08, xanchor="center", x=0.5,
-                       font=dict(size=12, color='#cbd5e1')),
-            hovermode='x unified'
+        # Recommendation badge
+        st.markdown(
+            f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
+            f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
+            f"{rec_emoji} {rec_label}</span>",
+            unsafe_allow_html=True
         )
         
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        # Confidence bar
+        rec_score = insights.get('score', 0.5)
+        if not pd.isna(rec_score):
+            score_100 = max(0, min(100, int(round(rec_score * 100)) if isinstance(rec_score, float) else int(rec_score)))
+            st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
         
-        # Key Metrics (below chart)
-        st.markdown("### 🎯 Key Metrics")
+        # Source
+        source = insights.get('source', 'unknown')
+        if source == 'gemini':
+            st.caption("🤖 Powered by Google Gemini 2.0 Flash")
+        elif source == 'no_api_key':
+            st.warning("⚠️ Gemini API key not configured.")
         
-        metric_col1, metric_col2 = st.columns(2)
+        st.write("")
         
-        with metric_col1:
-            # Target
-            st.markdown(f"""
-            <div style="
-                background: linear-gradient(135deg, {'#dc2626' if roi_pct < 0 else '#059669'}25 0%, transparent 100%);
-                border-left: 4px solid {'#dc2626' if roi_pct < 0 else '#059669'};
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 12px;
-            ">
-                <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; margin-bottom: 4px;">
-                    {horizon_days}-Day Target
-                </div>
-                <div style="font-size: 24px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px;">
-                    ${ensemble_pred:,.0f}
-                </div>
-                <div style="font-size: 14px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
-                    {roi_pct:+.1f}% Expected Return
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # RSI
-            rsi = technical.get('rsi', 50)
-            rsi_color = "#ef4444" if rsi > 70 else "#10b981" if rsi < 30 else "#94a3b8"
-            
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
-                <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; margin-bottom: 8px;">
-                    Technical Setup
-                </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-size: 11px; color: #64748b;">RSI (14)</div>
-                        <div style="font-size: 24px; font-weight: 700; color: {rsi_color};">{rsi:.0f}</div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 11px; color: #64748b;">Trend</div>
-                        <div style="font-size: 16px; color: #cbd5e1;">
-                            {"📈" if technical.get('trend') == "uptrend" else "📉" if technical.get('trend') == "downtrend" else "〰️"} {technical.get('trend', 'sideways').title()}
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        # News Sentiment
+        st.markdown("**📊 News Sentiment Analysis**")
+        pos = sentiment_breakdown['positive']
+        neu = sentiment_breakdown['neutral']
+        neg = sentiment_breakdown['negative']
         
-        with metric_col2:
-            # Forecast Quality
-            agreement_color = "#10b981" if model_agreement > 0.7 else "#f59e0b" if model_agreement > 0.6 else "#ef4444"
-            volatility = technical.get('volatility', 0)
-            
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
-                <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; margin-bottom: 8px;">
-                    Forecast Quality
-                </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-size: 11px; color: #64748b;">Agreement</div>
-                        <div style="font-size: 24px; font-weight: 700; color: {agreement_color};">{model_agreement:.0%}</div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 11px; color: #64748b;">Volatility</div>
-                        <div style="font-size: 24px; font-weight: 700; color: {'#ef4444' if volatility > 0.08 else '#f59e0b' if volatility > 0.05 else '#10b981'};">
-                            {volatility*100:.1f}%
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Sentiment
-            sentiment_emoji = "📈" if pos_pct > 50 else "📉" if neg_pct > 50 else "⚪"
-            sentiment_status = "Bullish" if pos_pct > 50 else "Bearish" if neg_pct > 50 else "Neutral"
-            
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
-                <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; margin-bottom: 8px;">
-                    Market Sentiment
-                </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-size: 11px; color: #64748b;">Status</div>
-                        <div style="font-size: 16px; color: #cbd5e1;">{sentiment_emoji} {sentiment_status}</div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 11px; color: #64748b;">Confidence</div>
-                        <div style="font-size: 24px; font-weight: 700; color: #94a3b8;">{sentiment_confidence:.0%}</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # RIGHT SECTION: ANALYSIS + RISKS + ACTION PLAN
-    # ========================================================================
-    with right_section:
-        # AI Analysis
-        st.markdown("### 🤖 AI Analysis")
+        st.markdown(sentiment_bar(pos, neu, neg))
+        st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        insight_text = insights.get('insight', 'Analysis unavailable')
+        sentiment_conf = result.get('sentiment_confidence', 0.5)
+        if sentiment_conf > 0:
+            st.caption(f"📊 Sentiment Confidence: {sentiment_conf:.0%}")
         
-        st.markdown(f"""
-        <div style="
-            background: #1e293b;
-            border-left: 4px solid {rec_color};
-            border-radius: 10px;
-            padding: 20px;
-            font-size: 14px;
-            line-height: 1.7;
-            color: #cbd5e1;
-            margin-bottom: 24px;
-            min-height: 180px;
-        ">
-            {insight_text}
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("")
         
-        # Key Risks
-        st.markdown("### ⚠️ Key Risks")
+        # AI Analysis Summary
+        st.markdown("**📋 Analysis Summary**")
         
-        if insights.get('risks'):
-            risks = insights['risks'][:3]
-            
-            for i, risk in enumerate(risks, 1):
-                st.markdown(f"""
-                <div style="
-                    background: #fef2f2;
-                    border-left: 3px solid #ef4444;
-                    border-radius: 6px;
-                    padding: 12px 14px;
-                    margin-bottom: 10px;
-                    font-size: 13px;
-                    line-height: 1.6;
-                    color: #991b1b;
-                ">
-                    <strong>{i}.</strong> {risk}
-                </div>
-                """, unsafe_allow_html=True)
+        analysis_summary = build_analysis_summary(
+            insight_text=insights.get('insight', ''),
+            recommendation=rec_label,
+            market_data=market,
+            technical=technical,
+            sentiment_breakdown=sentiment_breakdown,
+            forecast_table=result.get('forecast_table', []),
+            horizon_days=horizon_days,
+            risks=insights.get('risks', [])
+        )
         
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.info(analysis_summary)
         
-        # Action Plan
-        st.markdown("### ✅ Action Plan")
+        st.write("")
         
-        if rec_text == "BUY":
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #10b981; font-weight: 600; font-size: 15px; margin-bottom: 12px;">📈 Entry Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
-                    🎯 <strong>Target Entry:</strong> ${technical.get('support', current_price*0.98):,.0f}<br>
-                    📊 <strong>Current:</strong> ${current_price:,.0f}<br>
-                    🛡️ <strong>Stop Loss:</strong> ${technical.get('support', current_price*0.98)*0.95:,.0f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        elif rec_text == "SELL":
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #ef4444; font-weight: 600; font-size: 15px; margin-bottom: 12px;">📉 Exit Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
-                    🎯 <strong>Target Exit:</strong> ${technical.get('resistance', current_price*1.02):,.0f}<br>
-                    📊 <strong>Current:</strong> ${current_price:,.0f}<br>
-                    🛡️ <strong>Stop Loss:</strong> ${current_price*1.05:,.0f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Risk Factors
+        st.markdown("**⚠️ Risk Factors**")
+        
+        risks = insights.get('risks', [])
+        if risks and isinstance(risks, list):
+            for risk in risks[:3]:
+                st.write(f"• {risk}")
         else:
-            st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 8px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #f59e0b; font-weight: 600; font-size: 15px; margin-bottom: 12px;">⏸️ Wait Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
-                    ⏸️ <strong>Action:</strong> Hold Position<br>
-                    👀 <strong>Watch:</strong> ${technical.get('support', current_price*0.98):,.0f} - ${technical.get('resistance', current_price*1.02):,.0f}<br>
-                    ✅ <strong>Review:</strong> Daily
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Fallback risks
+            if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
+                liq_pct = (volume / market_cap) * 100
+                if liq_pct < 5:
+                    st.write("🔴 Low liquidity risk")
+                elif liq_pct < 10:
+                    st.write("🟡 Medium liquidity")
+                else:
+                    st.write("🟢 Good liquidity")
+            
+            volatility = technical.get('volatility', 0)
+            if not pd.isna(volatility):
+                if volatility > 0.10:
+                    st.write("🔴 High volatility")
+                elif volatility > 0.05:
+                    st.write("🟡 Medium volatility")
+                else:
+                    st.write("🟢 Low volatility")
         
-        # Position Info
-        st.markdown(f"""
-        <div style="background: #1e293b; border-radius: 8px; padding: 18px;">
-            <div style="color: #94a3b8; font-weight: 600; font-size: 15px; margin-bottom: 12px;">💰 Position Info</div>
-            <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
-                💰 <strong>Risk:</strong> 1-2% of portfolio<br>
-                🎯 <strong>Position Size:</strong> Based on stop distance<br>
-                ⏰ <strong>Time Horizon:</strong> {horizon_days} days<br>
-                🔄 <strong>Review:</strong> Daily
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Footer
-    st.markdown("---")
-    st.caption(f"⚠️ Analysis: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')} • "
-              f"Confidence: {confidence:.0%} • Educational purposes only, not financial advice")
+        st.write("")
+        
+        # Technical Signals
+        st.markdown("**📈 Technical Signals**")
+        
+        momentum = technical.get('momentum', 0)
+        if not pd.isna(momentum):
+            if momentum > 5:
+                st.write("🟢 Strong upward momentum")
+            elif momentum > 0:
+                st.write("🟡 Slight upward momentum")
+            elif momentum > -5:
+                st.write("🟡 Slight downward momentum")
+            else:
+                st.write("🔴 Strong downward momentum")
+        
+        trend = technical.get('trend', 'sideways')
+        if trend == 'uptrend':
+            st.write("🟢 Uptrend detected")
+        elif trend == 'downtrend':
+            st.write("🔴 Downtrend detected")
+        else:
+            st.write("🟡 Sideways movement")
 
 # ============================================================================
 # MAIN APP
