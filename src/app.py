@@ -1157,7 +1157,7 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 # ============================================================================
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
-    """Render the main summary dashboard with all insights"""
+    """Minimalist full-width dashboard - everything fits on screen"""
     
     market = result['market']
     technical = result['technical']
@@ -1179,18 +1179,35 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     if "BUY" in rec_text:
         rec_label, rec_emoji, rec_color = "BUY", "🟢", "#16a34a"
     elif "SELL" in rec_text:
-        rec_label, rec_emoji, rec_color = "SELL / AVOID", "🔴", "#ef4444"
+        rec_label, rec_emoji, rec_color = "SELL", "🔴", "#ef4444"
     else:
-        rec_label, rec_emoji, rec_color = "HOLD / WAIT", "🟡", "#f59e0b"
+        rec_label, rec_emoji, rec_color = "HOLD", "🟡", "#f59e0b"
     
     # ========================================================================
-    # HEADER SECTION
+    # FULL WIDTH CSS
+    # ========================================================================
+    st.markdown("""
+    <style>
+    .main .block-container {
+        max-width: 100% !important;
+        padding-left: 2% !important;
+        padding-right: 2% !important;
+        padding-top: 1rem !important;
+    }
+    [data-testid="column"] {
+        padding: 0 8px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # ========================================================================
+    # ROW 1: HEADER (Price + Basic Info)
     # ========================================================================
     st.markdown(f"### 📊 {coin_name} ({symbol})")
     
-    cols = st.columns([1.5, 1.2, 1.2, 1.2])
+    header_cols = st.columns([1.5, 1, 1, 1.5])
     
-    with cols[0]:
+    with header_cols[0]:
         st.markdown("**Price**")
         st.markdown(f"<span style='font-size:2rem;font-weight:800'>${price:,.2f}</span>", unsafe_allow_html=True)
         
@@ -1210,43 +1227,141 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             unsafe_allow_html=True
         )
     
-    with cols[1]:
+    with header_cols[1]:
         st.metric("Market Cap", format_money(market_cap))
         st.metric("24h Volume", format_money(volume))
     
-    with cols[2]:
+    with header_cols[2]:
         pct_7d_display = f"{pct_7d:+.2f}%" if not pd.isna(pct_7d) else "—"
         st.metric("7d Change", pct_7d_display)
-        
         rsi_display = f"{rsi:.1f} ({get_rsi_zone(rsi)})" if not pd.isna(rsi) else "—"
         st.metric("RSI (14)", rsi_display)
     
-    with cols[3]:
+    with header_cols[3]:
         st.write("**Quick Info**")
-        
         if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
             liq_pct = (volume / market_cap) * 100
             liq_icon = "🟢" if liq_pct > 10 else "🟡" if liq_pct > 5 else "🔴"
             st.caption(f"{liq_icon} Liquidity: {liq_pct:.1f}%")
-        
         st.caption(f"📊 {get_rsi_zone(rsi)}")
-        
         trend_icon = "📈" if technical.get('trend') == 'uptrend' else "📉" if technical.get('trend') == 'downtrend' else "〰️"
         st.caption(f"{trend_icon} Trend: {technical.get('trend', 'N/A').title()}")
     
-    # STAGE 3: Enhanced dashboard sections
+    # Enhanced dashboard sections
     render_enhanced_dashboard_sections(result, market, technical)
     
     st.divider()
     
     # ========================================================================
-    # INSIGHTS AND RISK SECTION
+    # ROW 2: MAIN CONTENT (Left: Chart | Right: Analysis)
     # ========================================================================
-    st.subheader("✅ AI-Powered Insights & Risk Assessment")
     
-    main_col, risk_col = st.columns([2.5, 1])
+    left_main, right_main = st.columns([1.2, 1], gap="large")
     
-    with main_col:
+    # === LEFT: CHART ===
+    with left_main:
+        st.subheader(f"📈 {horizon_days}-Day Price Forecast & Chart")
+        
+        forecast_table = result['forecast_table']
+        history_df = result.get('history')
+        
+        if forecast_table and history_df is not None:
+            # Build chart data
+            combined_df = pd.DataFrame()
+            
+            if not history_df.empty and 'price' in history_df.columns:
+                hist_series = history_df['price'].tail(90)
+                combined_df['History'] = hist_series
+            
+            forecast_rows = []
+            for row in forecast_table:
+                date = row['date']
+                date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
+                ensemble = row.get('ensemble')
+                forecast_rows.append({
+                    'Date': date_str,
+                    'Forecast ($)': ensemble if ensemble is not None else None
+                })
+            
+            df_forecast = pd.DataFrame(forecast_rows).set_index('Date')
+            
+            if not df_forecast.empty:
+                forecast_series = df_forecast['Forecast ($)'].astype(float)
+                forecast_series.index = pd.to_datetime(forecast_series.index)
+                combined_df = pd.concat([combined_df, forecast_series.rename('Forecast')])
+            
+            if not combined_df.empty:
+                # Calculate support/resistance from forecast
+                ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
+                
+                if ensemble_preds:
+                    min_forecast = min(ensemble_preds)
+                    max_forecast = max(ensemble_preds)
+                    technical['support'] = min_forecast * 0.98
+                    technical['resistance'] = max_forecast * 1.02
+                
+                prediction_data = {'ensemble': ensemble_preds}
+                
+                # Create chart
+                create_enhanced_chart(
+                    combined_df=combined_df,
+                    market_data=market,
+                    technical=technical,
+                    coin_symbol=symbol,
+                    horizon_days=horizon_days,
+                    prediction_data=prediction_data
+                )
+        
+        # Key Metrics below chart
+        st.subheader("🎯 Key Metrics")
+        
+        metric_cols = st.columns(3)
+        
+        # Get model agreement
+        pred_data = result.get('predictions', {})
+        lstm_preds = pred_data.get('lstm', [])
+        xgb_preds = pred_data.get('xgboost', [])
+        ensemble_preds = pred_data.get('ensemble', [])
+        
+        if lstm_preds and xgb_preds and ensemble_preds:
+            lstm_final = lstm_preds[-1]
+            xgb_final = xgb_preds[-1]
+            ensemble_final = ensemble_preds[-1]
+            if ensemble_final != 0:
+                lstm_diff = abs((lstm_final - ensemble_final) / ensemble_final)
+                xgb_diff = abs((xgb_final - ensemble_final) / ensemble_final)
+                avg_diff = (lstm_diff + xgb_diff) / 2
+                model_agreement = max(0.3, min(1.0, 1.0 - avg_diff * 2))
+            else:
+                model_agreement = 0.5
+        else:
+            model_agreement = 0.5
+        
+        with metric_cols[0]:
+            # Target price
+            if forecast_table:
+                target_price = forecast_table[-1].get('ensemble', price)
+                roi = ((target_price - price) / price * 100) if price > 0 else 0
+                st.metric(f"{horizon_days}-Day Target", f"${target_price:,.0f}", f"{roi:+.1f}%")
+            else:
+                st.metric(f"{horizon_days}-Day Target", "N/A")
+        
+        with metric_cols[1]:
+            # Model agreement
+            agreement_label = "High" if model_agreement > 0.7 else "Moderate" if model_agreement > 0.6 else "Low"
+            st.metric("Model Agreement", f"{model_agreement:.0%}", agreement_label)
+        
+        with metric_cols[2]:
+            # Volatility
+            volatility = technical.get('volatility', 0)
+            vol_label = "High" if volatility > 0.08 else "Medium" if volatility > 0.05 else "Low"
+            st.metric("Volatility", f"{volatility*100:.1f}%", vol_label)
+    
+    # === RIGHT: ANALYSIS + RISKS + ACTIONS ===
+    with right_main:
+        st.subheader("✅ AI-Powered Insights & Risk Assessment")
+        
+        # Recommendation badge
         st.markdown(
             f"<span style='display:inline-block;padding:8px 16px;border-radius:12px;"
             f"background:{rec_color}22;color:{rec_color};font-weight:800;font-size:1.1rem'>"
@@ -1254,32 +1369,30 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             unsafe_allow_html=True
         )
         
+        # Confidence
         rec_score = insights.get('score', 0.5)
         if not pd.isna(rec_score):
             score_100 = max(0, min(100, int(round(rec_score * 100)) if isinstance(rec_score, float) else int(rec_score)))
             st.progress(score_100 / 100.0, text=f"Confidence: {score_100}/100")
         
-        source = insights.get('source', 'unknown')
-        if source == 'gemini':
-            st.caption("🤖 Powered by Google Gemini 2.0 Flash")
-        elif source == 'no_api_key':
-            st.warning("⚠️ Gemini API key not configured.")
-        
         st.write("")
+        
+        # News Sentiment (compact)
         st.markdown("**📊 News Sentiment Analysis**")
         pos = sentiment_breakdown['positive']
         neu = sentiment_breakdown['neutral']
         neg = sentiment_breakdown['negative']
         
-        st.markdown(sentiment_bar(pos, neu, neg))
+        st.markdown(sentiment_bar(pos, neu, neg, width=20))
         st.caption(f"Positive {pos:.1f}% · Neutral {neu:.1f}% · Negative {neg:.1f}%")
         
-        # STAGE 2: Show sentiment confidence
         sentiment_conf = result.get('sentiment_confidence', 0.5)
         if sentiment_conf > 0:
             st.caption(f"📊 Sentiment Confidence: {sentiment_conf:.0%}")
         
         st.write("")
+        
+        # AI Analysis (compact)
         st.markdown("**📋 Analysis Summary**")
         
         analysis_summary = build_analysis_summary(
@@ -1293,136 +1406,51 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             risks=insights.get('risks', [])
         )
         
+        # Truncate if too long
+        if len(analysis_summary) > 400:
+            analysis_summary = analysis_summary[:400] + "..."
+        
         st.info(analysis_summary)
-    
-    with risk_col:
-        st.markdown("**⚠️ Risk Factors**")
+        
+        st.write("")
+        
+        # Key Risks (compact)
+        st.markdown("**⚠️ Key Risks**")
         
         risks = insights.get('risks', [])
         if risks and isinstance(risks, list):
-            for risk in risks[:3]:
-                st.write(f"• {risk}")
-        else:
-            # Fallback risks
-            if not pd.isna(volume) and not pd.isna(market_cap) and market_cap > 0:
-                liq_pct = (volume / market_cap) * 100
-                if liq_pct < 5:
-                    st.write("🔴 Low liquidity risk")
-                elif liq_pct < 10:
-                    st.write("🟡 Medium liquidity")
-                else:
-                    st.write("🟢 Good liquidity")
-            
-            volatility = technical.get('volatility', 0)
-            if not pd.isna(volatility):
-                if volatility > 0.10:
-                    st.write("🔴 High volatility")
-                elif volatility > 0.05:
-                    st.write("🟡 Medium volatility")
-                else:
-                    st.write("🟢 Low volatility")
+            for i, risk in enumerate(risks[:3], 1):
+                st.write(f"{i}. {risk}")
         
         st.write("")
-        st.markdown("**📈 Technical Signals**")
         
-        momentum = technical.get('momentum', 0)
-        if not pd.isna(momentum):
-            if momentum > 5:
-                st.write("🟢 Strong upward momentum")
-            elif momentum > 0:
-                st.write("🟡 Slight upward momentum")
-            elif momentum > -5:
-                st.write("🟡 Slight downward momentum")
-            else:
-                st.write("🔴 Strong downward momentum")
+        # Action Plan (compact)
+        st.markdown("**✅ Action Plan**")
         
-        trend = technical.get('trend', 'sideways')
-        if trend == 'uptrend':
-            st.write("🟢 Uptrend detected")
-        elif trend == 'downtrend':
-            st.write("🔴 Downtrend detected")
+        if rec_label == "BUY":
+            support = technical.get('support', price * 0.98)
+            st.write(f"🎯 **Entry:** ${support:,.0f}")
+            st.write(f"📊 **Current:** ${price:,.0f}")
+            st.write(f"🛡️ **Stop Loss:** ${support*0.95:,.0f}")
+        elif rec_label == "SELL":
+            resistance = technical.get('resistance', price * 1.02)
+            st.write(f"🎯 **Exit:** ${resistance:,.0f}")
+            st.write(f"📊 **Current:** ${price:,.0f}")
+            st.write(f"🛡️ **Stop Loss:** ${price*1.05:,.0f}")
         else:
-            st.write("🟡 Sideways movement")
+            support = technical.get('support', price * 0.98)
+            resistance = technical.get('resistance', price * 1.02)
+            st.write(f"⏸️ **Action:** Hold Position")
+            st.write(f"👀 **Watch:** ${support:,.0f} - ${resistance:,.0f}")
+            st.write(f"✅ **Review:** Daily")
+        
+        st.caption(f"💰 Risk: 1-2% of portfolio • ⏰ Horizon: {horizon_days} days")
     
+    # Footer
     st.divider()
-    
-    # ========================================================================
-    # FORECAST SECTION WITH ENHANCED CHART
-    # ========================================================================
-    st.subheader(f"🎯 {horizon_days}-Day Price Forecast")
+    st.caption(f"⚠️ Analysis generated at {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')} • "
+              f"Confidence: {score_100}/100 • Educational purposes only, not financial advice")
 
-    forecast_table = result['forecast_table']
-    history_df = result.get('history')
-    
-    if forecast_table:
-        forecast_rows = []
-        for row in forecast_table:
-            date = row['date']
-            date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
-            ensemble = row.get('ensemble')
-            forecast_rows.append({
-                'Date': date_str,
-                'Forecast ($)': ensemble if ensemble is not None else None
-            })
-        
-        df_forecast = pd.DataFrame(forecast_rows).set_index('Date')
-        
-        chart_col, table_col = st.columns([1.3, 1])
-        
-        with table_col:
-            st.dataframe(
-                df_forecast.style.format({'Forecast ($)': '${:,.2f}'}),
-                use_container_width=True
-            )
-        
-        with chart_col:
-            # Create combined chart
-            combined_df = pd.DataFrame()
-            
-            if history_df is not None and not history_df.empty and 'price' in history_df.columns:
-                hist_series = history_df['price'].tail(90)
-                combined_df['History'] = hist_series
-            
-            if not df_forecast.empty:
-                forecast_series = df_forecast['Forecast ($)'].astype(float)
-                forecast_series.index = pd.to_datetime(forecast_series.index)
-                combined_df = pd.concat([combined_df, forecast_series.rename('Forecast')])
-            
-            # STAGE 3: Enhanced chart with support/resistance
-            if not combined_df.empty:
-                # Extract ensemble predictions
-                ensemble_preds = [row.get('ensemble') for row in forecast_table if row.get('ensemble') is not None]
-                
-                if ensemble_preds:
-                    # Use min/max of forecast as support/resistance
-                    min_forecast = min(ensemble_preds)
-                    max_forecast = max(ensemble_preds)
-                    
-                    # Add 2% buffer for better visualization
-                    support_level = min_forecast * 0.98
-                    resistance_level = max_forecast * 1.02
-                    
-                    # Override technical indicators with forecast-based levels
-                    technical['support'] = support_level
-                    technical['resistance'] = resistance_level
-                
-                # Package prediction data
-                prediction_data = {
-                    'ensemble': ensemble_preds
-                }
-                
-                create_enhanced_chart(
-                    combined_df=combined_df,
-                    market_data=market,
-                    technical=technical,
-                    coin_symbol=symbol,
-                    horizon_days=horizon_days,
-                    prediction_data=prediction_data
-                )
-            else:
-                st.info("Insufficient data for chart")
-    else:
-        st.info("No forecast data available")
 
 # ============================================================================
 # STAGE 3: ENHANCED ERROR DISPLAY (NEW)
