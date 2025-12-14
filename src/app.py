@@ -1158,8 +1158,9 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
     """
-    TRUE full-width layout - uses entire browser width
-    SAME LAYOUT - JUST WIDER
+    Rearranged full-width layout:
+    - Row 1: BTC info + Decision + Key Metrics (all in one row)
+    - Row 2: Chart (left) | Analysis/Risks/Actions (right)
     """
     
     if 'error' in result:
@@ -1226,11 +1227,10 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     neg_pct = sentiment_breakdown.get('negative', 0)
     
     # ========================================================================
-    # ACTUAL FULL WIDTH CSS - CHANGE ONLY THIS
+    # FULL WIDTH CSS
     # ========================================================================
     st.markdown("""
     <style>
-    /* FORCE FULL WIDTH - ONLY 1% MARGINS */
     .main .block-container {
         max-width: 100% !important;
         width: 100% !important;
@@ -1239,29 +1239,19 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         padding-top: 0.5rem !important;
         padding-bottom: 1rem !important;
     }
-    
-    /* Remove element padding */
     .element-container {
         width: 100% !important;
     }
-    
-    /* Column spacing */
     [data-testid="column"] {
         width: 100% !important;
         padding: 0 8px !important;
     }
-    
-    /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
-    /* Plotly full width */
     .js-plotly-plot {
         width: 100% !important;
     }
-    
-    /* Remove gap at top */
     .appview-container .main .block-container {
         padding-top: 0.5rem !important;
     }
@@ -1269,60 +1259,103 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # EVERYTHING BELOW STAYS EXACTLY THE SAME
+    # ROW 1: BTC INFO + DECISION + KEY METRICS (ALL IN ONE ROW)
     # ========================================================================
-    
-    # DECISION BAR - FULL WIDTH
     st.markdown(f"""
     <div style="
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 40px;
-        padding: 24px 40px;
         background: linear-gradient(135deg, {rec_color}18 0%, transparent 100%);
         border-left: 6px solid {rec_color};
         border-radius: 12px;
         margin-bottom: 24px;
-        width: 100%;
+        padding: 24px 32px;
     ">
-        <div>
-            <h1 style="margin: 0; font-size: 36px; color: #f1f5f9; font-weight: 700; letter-spacing: -0.5px;">
-                {coin_symbol}
-            </h1>
-            <div style="display: flex; align-items: baseline; gap: 20px; margin-top: 12px;">
-                <span style="font-size: 42px; font-weight: 700; color: #f1f5f9;">
-                    ${current_price:,.2f}
-                </span>
-                <span style="font-size: 20px; font-weight: 600; color: {'#ef4444' if price_change_24h < 0 else '#10b981'};">
-                    {price_change_24h:+.2f}% • 24h
-                </span>
+        <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 32px; align-items: center;">
+            <!-- LEFT: BTC Price -->
+            <div>
+                <h1 style="margin: 0; font-size: 28px; color: #f1f5f9; font-weight: 700;">
+                    {coin_symbol}
+                </h1>
+                <div style="margin-top: 8px;">
+                    <span style="font-size: 36px; font-weight: 700; color: #f1f5f9;">
+                        ${current_price:,.2f}
+                    </span>
+                    <span style="font-size: 16px; font-weight: 600; color: {'#ef4444' if price_change_24h < 0 else '#10b981'}; margin-left: 12px;">
+                        {price_change_24h:+.2f}% • 24h
+                    </span>
+                </div>
             </div>
-        </div>
-        <div style="text-align: right;">
-            <div style="display: flex; align-items: center; gap: 20px; justify-content: flex-end;">
-                <span style="font-size: 64px; line-height: 1;">{rec_emoji}</span>
-                <div>
-                    <h2 style="margin: 0; font-size: 48px; font-weight: 700; color: {rec_color}; line-height: 1; letter-spacing: -1px;">
-                        {rec_text}
-                    </h2>
-                    <p style="margin: 6px 0 0 0; color: #94a3b8; font-size: 16px;">
-                        {confidence:.0%} Confidence • {horizon_days}-Day Outlook
-                    </p>
+            
+            <!-- CENTER: Decision -->
+            <div style="text-align: center;">
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <span style="font-size: 56px; line-height: 1;">{rec_emoji}</span>
+                    <div>
+                        <h2 style="margin: 0; font-size: 40px; font-weight: 700; color: {rec_color}; line-height: 1;">
+                            {rec_text}
+                        </h2>
+                        <p style="margin: 4px 0 0 0; color: #94a3b8; font-size: 14px;">
+                            {confidence:.0%} Confidence • {horizon_days}-Day Outlook
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- RIGHT: Key Metrics -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+                <!-- Target -->
+                <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                        {horizon_days}d Target
+                    </div>
+                    <div style="font-size: 20px; font-weight: 700; color: #f1f5f9;">
+                        ${ensemble_pred:,.0f}
+                    </div>
+                    <div style="font-size: 12px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
+                        {roi_pct:+.1f}%
+                    </div>
+                </div>
+                
+                <!-- Model Agreement -->
+                <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                        Agreement
+                    </div>
+                    <div style="font-size: 20px; font-weight: 700; color: {'#10b981' if model_agreement > 0.7 else '#f59e0b' if model_agreement > 0.6 else '#ef4444'};">
+                        {model_agreement:.0%}
+                    </div>
+                    <div style="font-size: 11px; color: #64748b;">
+                        {'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'}
+                    </div>
+                </div>
+                
+                <!-- Volatility -->
+                <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                    <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                        Volatility
+                    </div>
+                    <div style="font-size: 20px; font-weight: 700; color: {'#ef4444' if technical.get('volatility', 0) > 0.08 else '#f59e0b' if technical.get('volatility', 0) > 0.05 else '#10b981'};">
+                        {technical.get('volatility', 0)*100:.1f}%
+                    </div>
+                    <div style="font-size: 11px; color: #64748b;">
+                        {'High' if technical.get('volatility', 0) > 0.08 else 'Medium' if technical.get('volatility', 0) > 0.05 else 'Low'}
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
     
-    # MAIN CONTENT - 2 COLUMNS (70/30 split)
-    chart_col, sidebar_col = st.columns([7, 3], gap="large")
+    # ========================================================================
+    # ROW 2: CHART (LEFT) | ANALYSIS/RISKS/ACTIONS (RIGHT)
+    # ========================================================================
     
+    chart_col, analysis_col = st.columns([1.3, 1], gap="large")
+    
+    # === LEFT: CHART ===
     with chart_col:
         st.markdown("### 📈 Price Forecast & Chart")
         
-        # Create chart
         history_df = result.get('history')
-        
         fig = go.Figure()
         
         # Add history
@@ -1376,7 +1409,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 )
         
         fig.update_layout(
-            height=500,
+            height=600,
             margin=dict(l=10, r=10, t=30, b=10),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(30,41,59,0.4)',
@@ -1416,103 +1449,9 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
-    with sidebar_col:
-        st.markdown("### 🎯 Key Metrics")
-        
-        # Target Card
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, {'#dc2626' if roi_pct < 0 else '#059669'}25 0%, transparent 100%);
-            border-left: 5px solid {'#dc2626' if roi_pct < 0 else '#059669'};
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">
-                {horizon_days}-Day Target
-            </div>
-            <div style="font-size: 32px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px;">
-                ${ensemble_pred:,.0f}
-            </div>
-            <div style="font-size: 17px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
-                {roi_pct:+.1f}% Expected Return
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Technical Setup
-        rsi = technical.get('rsi', 50)
-        trend = technical.get('trend', 'sideways')
-        rsi_color = "#ef4444" if rsi > 70 else "#10b981" if rsi < 30 else "#94a3b8"
-        trend_emoji = "📈" if trend == "uptrend" else "📉" if trend == "downtrend" else "〰️"
-        
-        st.markdown(f"""
-        <div style="
-            background: #1e293b;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;">
-                Technical Setup
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">RSI (14)</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {rsi_color};">{rsi:.0f}</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'}
-                    </div>
-                </div>
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Trend</div>
-                    <div style="font-size: 20px; color: #cbd5e1; margin-top: 4px;">
-                        {trend_emoji} {trend.title()}
-                    </div>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Forecast Quality
-        agreement_color = "#10b981" if model_agreement > 0.7 else "#f59e0b" if model_agreement > 0.6 else "#ef4444"
-        volatility = technical.get('volatility', 0)
-        vol_color = "#ef4444" if volatility > 0.08 else "#f59e0b" if volatility > 0.05 else "#10b981"
-        
-        st.markdown(f"""
-        <div style="
-            background: #1e293b;
-            border-radius: 10px;
-            padding: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;">
-                Forecast Quality
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Agreement</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {agreement_color};">{model_agreement:.0%}</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'}
-                    </div>
-                </div>
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Volatility</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {vol_color};">{volatility*100:.1f}%</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'High' if volatility > 0.08 else 'Medium' if volatility > 0.05 else 'Low'}
-                    </div>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # BOTTOM ROW - 3 EQUAL COLUMNS
-    st.markdown("---")
-    
-    analysis_col, risk_col, action_col = st.columns(3, gap="large")
-    
+    # === RIGHT: ANALYSIS + RISKS + ACTIONS (STACKED VERTICALLY) ===
     with analysis_col:
+        # AI Analysis
         st.markdown("### 🤖 AI Analysis")
         
         insight_text = insights.get('insight', 'Analysis unavailable')
@@ -1522,17 +1461,18 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             background: #1e293b;
             border-left: 4px solid {rec_color};
             border-radius: 10px;
-            padding: 22px;
+            padding: 18px;
             font-size: 14px;
-            line-height: 1.75;
+            line-height: 1.7;
             color: #cbd5e1;
-            min-height: 180px;
+            margin-bottom: 20px;
+            min-height: 140px;
         ">
             {insight_text}
         </div>
         """, unsafe_allow_html=True)
-    
-    with risk_col:
+        
+        # Key Risks
         st.markdown("### ⚠️ Key Risks")
         
         if insights.get('risks'):
@@ -1542,26 +1482,28 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 st.markdown(f"""
                 <div style="
                     background: #fef2f2;
-                    border-left: 4px solid #ef4444;
-                    border-radius: 8px;
-                    padding: 14px 16px;
-                    margin-bottom: 12px;
+                    border-left: 3px solid #ef4444;
+                    border-radius: 6px;
+                    padding: 10px 12px;
+                    margin-bottom: 10px;
                     font-size: 13px;
-                    line-height: 1.6;
+                    line-height: 1.5;
                     color: #991b1b;
                 ">
                     <strong style="color: #7f1d1d;">{i}.</strong> {risk}
                 </div>
                 """, unsafe_allow_html=True)
-    
-    with action_col:
+        
+        st.write("")
+        
+        # Action Plan
         st.markdown("### ✅ Action Plan")
         
         if rec_text == "BUY":
             st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 10px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #10b981; font-weight: 600; font-size: 15px; margin-bottom: 12px;">📈 Entry Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
+            <div style="background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+                <div style="color: #10b981; font-weight: 600; font-size: 14px; margin-bottom: 10px;">📈 Entry Strategy</div>
+                <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
                     🎯 <strong>Entry:</strong> ${technical.get('support', current_price*0.98):,.0f}<br>
                     📊 <strong>Current:</strong> ${current_price:,.0f}<br>
                     🛡️ <strong>Stop:</strong> ${technical.get('support', current_price*0.98)*0.95:,.0f}
@@ -1570,9 +1512,9 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             """, unsafe_allow_html=True)
         elif rec_text == "SELL":
             st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 10px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #ef4444; font-weight: 600; font-size: 15px; margin-bottom: 12px;">📉 Exit Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
+            <div style="background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+                <div style="color: #ef4444; font-weight: 600; font-size: 14px; margin-bottom: 10px;">📉 Exit Strategy</div>
+                <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
                     🎯 <strong>Exit:</strong> ${technical.get('resistance', current_price*1.02):,.0f}<br>
                     📊 <strong>Current:</strong> ${current_price:,.0f}<br>
                     🛡️ <strong>Stop:</strong> ${current_price*1.05:,.0f}
@@ -1581,9 +1523,9 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             """, unsafe_allow_html=True)
         else:
             st.markdown(f"""
-            <div style="background: #1e293b; border-radius: 10px; padding: 18px; margin-bottom: 14px;">
-                <div style="color: #f59e0b; font-weight: 600; font-size: 15px; margin-bottom: 12px;">⏸️ Wait Strategy</div>
-                <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
+            <div style="background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+                <div style="color: #f59e0b; font-weight: 600; font-size: 14px; margin-bottom: 10px;">⏸️ Wait Strategy</div>
+                <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
                     ⏸️ <strong>Action:</strong> Hold<br>
                     👀 <strong>Watch:</strong> ${technical.get('support', current_price*0.98):,.0f} - ${technical.get('resistance', current_price*1.02):,.0f}<br>
                     ✅ <strong>Review:</strong> Daily
@@ -1591,12 +1533,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             </div>
             """, unsafe_allow_html=True)
         
-        # Position sizing
+        # Position Info
         sentiment_emoji = "📈" if pos_pct > 50 else "📉" if neg_pct > 50 else "⚪"
         st.markdown(f"""
-        <div style="background: #1e293b; border-radius: 10px; padding: 18px;">
-            <div style="color: #94a3b8; font-weight: 600; font-size: 15px; margin-bottom: 12px;">💰 Position Info</div>
-            <div style="font-size: 14px; line-height: 2; color: #cbd5e1;">
+        <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
+            <div style="color: #94a3b8; font-weight: 600; font-size: 14px; margin-bottom: 10px;">💰 Position Info</div>
+            <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
                 💰 <strong>Risk:</strong> 1-2% portfolio<br>
                 {sentiment_emoji} <strong>Sentiment:</strong> {sentiment_confidence:.0%}<br>
                 ⏰ <strong>Horizon:</strong> {horizon_days} days
