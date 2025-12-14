@@ -1158,7 +1158,9 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
     """
-    TRUE full-width layout - uses entire browser width
+    TRUE full-width layout - REARRANGED
+    Row 1: BTC + Decision + Key Metrics
+    Row 2: Chart (left) | Analysis + Risks + Actions (right)
     """
     
     if 'error' in result:
@@ -1224,42 +1226,36 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     pos_pct = sentiment_breakdown.get('positive', 0)
     neg_pct = sentiment_breakdown.get('negative', 0)
     
+    # Get technical indicators for sidebar
+    rsi = technical.get('rsi', 50)
+    trend = technical.get('trend', 'sideways')
+    volatility = technical.get('volatility', 0)
+    
     # ========================================================================
-    # FORCE ACTUAL FULL WIDTH - AGGRESSIVE CSS
+    # FULL WIDTH CSS
     # ========================================================================
     st.markdown("""
     <style>
-    /* FORCE full width */
     .main .block-container {
         max-width: 100% !important;
         width: 100% !important;
-        padding-left: 5% !important;
-        padding-right: 5% !important;
+        padding-left: 1% !important;
+        padding-right: 1% !important;
         padding-top: 1rem !important;
     }
-    
-    /* Remove ALL default padding */
     .element-container {
         width: 100% !important;
     }
-    
-    /* Make columns use full width */
     [data-testid="column"] {
         width: 100% !important;
         padding: 0 12px !important;
     }
-    
-    /* Hide Streamlit elements */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
-    /* Remove top padding */
     .appview-container .main .block-container {
         padding-top: 1rem !important;
     }
-    
-    /* Force plotly to be full width */
     .js-plotly-plot {
         width: 100% !important;
     }
@@ -1267,13 +1263,13 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # DECISION BAR - FULL WIDTH
+    # ROW 1: HEADER - BTC + DECISION + KEY METRICS (CHANGED FROM 2 TO 3 COLUMNS)
     # ========================================================================
     st.markdown(f"""
     <div style="
         display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 40px;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 32px;
         padding: 24px 40px;
         background: linear-gradient(135deg, {rec_color}18 0%, transparent 100%);
         border-left: 6px solid {rec_color};
@@ -1307,25 +1303,60 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 </div>
             </div>
         </div>
+        
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                    {horizon_days}d Target
+                </div>
+                <div style="font-size: 20px; font-weight: 700; color: #f1f5f9;">
+                    ${ensemble_pred:,.0f}
+                </div>
+                <div style="font-size: 12px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
+                    {roi_pct:+.1f}%
+                </div>
+            </div>
+            
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                    Agreement
+                </div>
+                <div style="font-size: 20px; font-weight: 700; color: {'#10b981' if model_agreement > 0.7 else '#f59e0b' if model_agreement > 0.6 else '#ef4444'};">
+                    {model_agreement:.0%}
+                </div>
+                <div style="font-size: 11px; color: #64748b;">
+                    {'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'}
+                </div>
+            </div>
+            
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
+                <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
+                    Volatility
+                </div>
+                <div style="font-size: 20px; font-weight: 700; color: {'#ef4444' if volatility > 0.08 else '#f59e0b' if volatility > 0.05 else '#10b981'};">
+                    {volatility*100:.1f}%
+                </div>
+                <div style="font-size: 11px; color: #64748b;">
+                    {'High' if volatility > 0.08 else 'Medium' if volatility > 0.05 else 'Low'}
+                </div>
+            </div>
+        </div>
+        
     </div>
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # MAIN CONTENT - 2 COLUMNS (70/30 split)
+    # ROW 2: CHART (LEFT) | ANALYSIS + RISKS + ACTIONS (RIGHT)
     # ========================================================================
     
-    # Use native Streamlit columns with wider ratio
     chart_col, sidebar_col = st.columns([7, 3], gap="large")
     
     with chart_col:
         st.markdown("### 📈 Price Forecast & Chart")
         
-        # Create chart
         history_df = result.get('history')
-        
         fig = go.Figure()
         
-        # Add history
         if history_df is not None and not history_df.empty and 'price' in history_df.columns:
             hist_series = history_df['price'].tail(90)
             fig.add_trace(go.Scatter(
@@ -1336,7 +1367,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 hovertemplate='<b>%{x}</b><br>$%{y:,.2f}<extra></extra>'
             ))
         
-        # Add forecast
         if forecast_table:
             forecast_dates = [row['date'] for row in forecast_table]
             forecast_values = [row.get('ensemble') for row in forecast_table]
@@ -1349,7 +1379,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 hovertemplate='<b>%{x}</b><br>$%{y:,.2f}<extra></extra>'
             ))
             
-            # Support/Resistance
             if ensemble_preds:
                 min_forecast = min(ensemble_preds)
                 max_forecast = max(ensemble_preds)
@@ -1376,7 +1405,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 )
         
         fig.update_layout(
-            height=500,
+            height=600,
             margin=dict(l=10, r=10, t=30, b=10),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(30,41,59,0.4)',
@@ -1417,104 +1446,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     with sidebar_col:
-        st.markdown("### 🎯 Key Metrics")
-        
-        # Target Card
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, {'#dc2626' if roi_pct < 0 else '#059669'}25 0%, transparent 100%);
-            border-left: 5px solid {'#dc2626' if roi_pct < 0 else '#059669'};
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">
-                {horizon_days}-Day Target
-            </div>
-            <div style="font-size: 32px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px;">
-                ${ensemble_pred:,.0f}
-            </div>
-            <div style="font-size: 17px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
-                {roi_pct:+.1f}% Expected Return
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Technical Setup
-        rsi = technical.get('rsi', 50)
-        trend = technical.get('trend', 'sideways')
-        rsi_color = "#ef4444" if rsi > 70 else "#10b981" if rsi < 30 else "#94a3b8"
-        trend_emoji = "📈" if trend == "uptrend" else "📉" if trend == "downtrend" else "〰️"
-        
-        st.markdown(f"""
-        <div style="
-            background: #1e293b;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;">
-                Technical Setup
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">RSI (14)</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {rsi_color};">{rsi:.0f}</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'}
-                    </div>
-                </div>
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Trend</div>
-                    <div style="font-size: 20px; color: #cbd5e1; margin-top: 4px;">
-                        {trend_emoji} {trend.title()}
-                    </div>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Forecast Quality
-        agreement_color = "#10b981" if model_agreement > 0.7 else "#f59e0b" if model_agreement > 0.6 else "#ef4444"
-        volatility = technical.get('volatility', 0)
-        vol_color = "#ef4444" if volatility > 0.08 else "#f59e0b" if volatility > 0.05 else "#10b981"
-        
-        st.markdown(f"""
-        <div style="
-            background: #1e293b;
-            border-radius: 10px;
-            padding: 20px;
-        ">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;">
-                Forecast Quality
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Agreement</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {agreement_color};">{model_agreement:.0%}</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'}
-                    </div>
-                </div>
-                <div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Volatility</div>
-                    <div style="font-size: 28px; font-weight: 700; color: {vol_color};">{volatility*100:.1f}%</div>
-                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                        {'High' if volatility > 0.08 else 'Medium' if volatility > 0.05 else 'Low'}
-                    </div>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # BOTTOM ROW - 3 EQUAL COLUMNS
-    # ========================================================================
-    st.markdown("---")
-    
-    analysis_col, risk_col, action_col = st.columns(3, gap="large")
-    
-    with analysis_col:
+        # AI Analysis (MOVED FROM BOTTOM)
         st.markdown("### 🤖 AI Analysis")
         
         insight_text = insights.get('insight', 'Analysis unavailable')
@@ -1533,8 +1465,8 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             {insight_text}
         </div>
         """, unsafe_allow_html=True)
-    
-    with risk_col:
+        
+        # Key Risks (MOVED FROM BOTTOM)
         st.markdown("### ⚠️ Key Risks")
         
         if insights.get('risks'):
@@ -1555,8 +1487,8 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     <strong style="color: #7f1d1d;">{i}.</strong> {risk}
                 </div>
                 """, unsafe_allow_html=True)
-    
-    with action_col:
+        
+        # Action Plan (MOVED FROM BOTTOM)
         st.markdown("### ✅ Action Plan")
         
         if rec_text == "BUY":
@@ -1593,7 +1525,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             </div>
             """, unsafe_allow_html=True)
         
-        # Position sizing
+        # Position Info
         sentiment_emoji = "📈" if pos_pct > 50 else "📉" if neg_pct > 50 else "⚪"
         st.markdown(f"""
         <div style="background: #1e293b; border-radius: 10px; padding: 18px;">
@@ -1610,6 +1542,41 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     st.markdown("---")
     st.caption(f"⚠️ Analysis: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')} • "
               f"Confidence: {confidence:.0%} • Educational purposes only")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ============================================================================
