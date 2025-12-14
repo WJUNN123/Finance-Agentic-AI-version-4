@@ -1158,9 +1158,7 @@ def create_enhanced_chart(combined_df, market_data, technical, coin_symbol, hori
 
 def render_summary_dashboard(result: Dict, horizon_days: int):
     """
-    Rearranged full-width layout:
-    - Row 1: BTC info + Decision + Key Metrics (all in one row)
-    - Row 2: Chart (left) | Analysis/Risks/Actions (right)
+    Rearranged full-width layout - FIXED HTML RENDERING
     """
     
     if 'error' in result:
@@ -1226,6 +1224,11 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     pos_pct = sentiment_breakdown.get('positive', 0)
     neg_pct = sentiment_breakdown.get('negative', 0)
     
+    # Tech indicators
+    rsi = technical.get('rsi', 50)
+    trend = technical.get('trend', 'sideways')
+    volatility = technical.get('volatility', 0)
+    
     # ========================================================================
     # FULL WIDTH CSS
     # ========================================================================
@@ -1252,16 +1255,22 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     .js-plotly-plot {
         width: 100% !important;
     }
-    .appview-container .main .block-container {
-        padding-top: 0.5rem !important;
-    }
     </style>
     """, unsafe_allow_html=True)
     
     # ========================================================================
-    # ROW 1: BTC INFO + DECISION + KEY METRICS (ALL IN ONE ROW)
+    # ROW 1: HEADER WITH ALL INFO
     # ========================================================================
-    st.markdown(f"""
+    
+    # Calculate colors
+    price_change_color = '#ef4444' if price_change_24h < 0 else '#10b981'
+    roi_color = '#ef4444' if roi_pct < 0 else '#10b981'
+    agreement_color = '#10b981' if model_agreement > 0.7 else '#f59e0b' if model_agreement > 0.6 else '#ef4444'
+    agreement_label = 'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'
+    vol_color = '#ef4444' if volatility > 0.08 else '#f59e0b' if volatility > 0.05 else '#10b981'
+    vol_label = 'High' if volatility > 0.08 else 'Medium' if volatility > 0.05 else 'Low'
+    
+    header_html = f"""
     <div style="
         background: linear-gradient(135deg, {rec_color}18 0%, transparent 100%);
         border-left: 6px solid {rec_color};
@@ -1270,7 +1279,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         padding: 24px 32px;
     ">
         <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 32px; align-items: center;">
-            <!-- LEFT: BTC Price -->
+            
             <div>
                 <h1 style="margin: 0; font-size: 28px; color: #f1f5f9; font-weight: 700;">
                     {coin_symbol}
@@ -1279,13 +1288,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     <span style="font-size: 36px; font-weight: 700; color: #f1f5f9;">
                         ${current_price:,.2f}
                     </span>
-                    <span style="font-size: 16px; font-weight: 600; color: {'#ef4444' if price_change_24h < 0 else '#10b981'}; margin-left: 12px;">
+                    <span style="font-size: 16px; font-weight: 600; color: {price_change_color}; margin-left: 12px;">
                         {price_change_24h:+.2f}% • 24h
                     </span>
                 </div>
             </div>
             
-            <!-- CENTER: Decision -->
             <div style="text-align: center;">
                 <div style="display: flex; align-items: center; gap: 16px;">
                     <span style="font-size: 56px; line-height: 1;">{rec_emoji}</span>
@@ -1300,9 +1308,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 </div>
             </div>
             
-            <!-- RIGHT: Key Metrics -->
             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
-                <!-- Target -->
                 <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
                     <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
                         {horizon_days}d Target
@@ -1310,40 +1316,41 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     <div style="font-size: 20px; font-weight: 700; color: #f1f5f9;">
                         ${ensemble_pred:,.0f}
                     </div>
-                    <div style="font-size: 12px; font-weight: 600; color: {'#ef4444' if roi_pct < 0 else '#10b981'};">
+                    <div style="font-size: 12px; font-weight: 600; color: {roi_color};">
                         {roi_pct:+.1f}%
                     </div>
                 </div>
                 
-                <!-- Model Agreement -->
                 <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
                     <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
                         Agreement
                     </div>
-                    <div style="font-size: 20px; font-weight: 700; color: {'#10b981' if model_agreement > 0.7 else '#f59e0b' if model_agreement > 0.6 else '#ef4444'};">
+                    <div style="font-size: 20px; font-weight: 700; color: {agreement_color};">
                         {model_agreement:.0%}
                     </div>
                     <div style="font-size: 11px; color: #64748b;">
-                        {'High' if model_agreement > 0.7 else 'Moderate' if model_agreement > 0.6 else 'Low'}
+                        {agreement_label}
                     </div>
                 </div>
                 
-                <!-- Volatility -->
                 <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center;">
                     <div style="font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">
                         Volatility
                     </div>
-                    <div style="font-size: 20px; font-weight: 700; color: {'#ef4444' if technical.get('volatility', 0) > 0.08 else '#f59e0b' if technical.get('volatility', 0) > 0.05 else '#10b981'};">
-                        {technical.get('volatility', 0)*100:.1f}%
+                    <div style="font-size: 20px; font-weight: 700; color: {vol_color};">
+                        {volatility*100:.1f}%
                     </div>
                     <div style="font-size: 11px; color: #64748b;">
-                        {'High' if technical.get('volatility', 0) > 0.08 else 'Medium' if technical.get('volatility', 0) > 0.05 else 'Low'}
+                        {vol_label}
                     </div>
                 </div>
             </div>
+            
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    
+    st.markdown(header_html, unsafe_allow_html=True)
     
     # ========================================================================
     # ROW 2: CHART (LEFT) | ANALYSIS/RISKS/ACTIONS (RIGHT)
@@ -1413,45 +1420,18 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             margin=dict(l=10, r=10, t=30, b=10),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(30,41,59,0.4)',
-            xaxis=dict(
-                showgrid=False,
-                color='#94a3b8',
-                tickfont=dict(size=13),
-                title=None
-            ),
-            yaxis=dict(
-                showgrid=True,
-                gridcolor='#334155',
-                color='#94a3b8',
-                tickfont=dict(size=13),
-                tickformat='$,.0f',
-                title=None
-            ),
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.05,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=14, color='#cbd5e1'),
-                bgcolor='rgba(30,41,59,0.8)',
-                bordercolor='#334155',
-                borderwidth=1
-            ),
-            hovermode='x unified',
-            hoverlabel=dict(
-                bgcolor='#1e293b',
-                font_size=14,
-                font_color='#f1f5f9',
-                bordercolor='#334155'
-            )
+            xaxis=dict(showgrid=False, color='#94a3b8', tickfont=dict(size=13)),
+            yaxis=dict(showgrid=True, gridcolor='#334155', color='#94a3b8', 
+                      tickfont=dict(size=13), tickformat='$,.0f'),
+            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5,
+                       font=dict(size=14, color='#cbd5e1')),
+            hovermode='x unified'
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
-    # === RIGHT: ANALYSIS + RISKS + ACTIONS (STACKED VERTICALLY) ===
+    # === RIGHT: ANALYSIS + RISKS + ACTIONS ===
     with analysis_col:
-        # AI Analysis
         st.markdown("### 🤖 AI Analysis")
         
         insight_text = insights.get('insight', 'Analysis unavailable')
@@ -1472,7 +1452,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         </div>
         """, unsafe_allow_html=True)
         
-        # Key Risks
         st.markdown("### ⚠️ Key Risks")
         
         if insights.get('risks'):
@@ -1490,13 +1469,12 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     line-height: 1.5;
                     color: #991b1b;
                 ">
-                    <strong style="color: #7f1d1d;">{i}.</strong> {risk}
+                    <strong>{i}.</strong> {risk}
                 </div>
                 """, unsafe_allow_html=True)
         
         st.write("")
         
-        # Action Plan
         st.markdown("### ✅ Action Plan")
         
         if rec_text == "BUY":
@@ -1533,7 +1511,6 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
             </div>
             """, unsafe_allow_html=True)
         
-        # Position Info
         sentiment_emoji = "📈" if pos_pct > 50 else "📉" if neg_pct > 50 else "⚪"
         st.markdown(f"""
         <div style="background: #1e293b; border-radius: 8px; padding: 16px;">
