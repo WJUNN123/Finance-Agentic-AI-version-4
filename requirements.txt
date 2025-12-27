@@ -22,6 +22,7 @@ accelerate
 
 # LLM Integration
 google-generativeai
+google-genai
 
 # Data visualization
 matplotlib
