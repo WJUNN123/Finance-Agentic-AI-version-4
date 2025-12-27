@@ -7,7 +7,15 @@ import json
 import logging
 import time
 from typing import Dict, List, Optional
-import google.generativeai as genai
+
+# Try new SDK first, fall back to old one
+try:
+    from google import genai
+    from google.genai import types
+    USE_NEW_SDK = True
+except ImportError:
+    import google.generativeai as genai
+    USE_NEW_SDK = False
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +56,7 @@ CRITICAL RULES:
 OUTPUT FORMAT (strict JSON):
 {
     "recommendation": "BUY" | "SELL" | "HOLD",
-    "confidence": 0.0-1.0,
+    "score": 0.0-1.0,
     "insight": "2-3 sentence analysis with specific price targets and timeframe",
     "reasoning": "1-2 sentences explaining the key factors driving this recommendation",
     "risks": ["risk 1", "risk 2", "risk 3"],
@@ -86,23 +94,30 @@ class GeminiInsightGenerator:
         """
         self.api_key = api_key
         self.model = None
+        self.client = None
         self._initialize_client()
     
     def _initialize_client(self):
         """Initialize the Gemini client"""
         try:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(
-                model_name=GEMINI_CONFIG["model"],
-                generation_config=genai.GenerationConfig(
-                    temperature=GEMINI_CONFIG["temperature"],
-                    max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
-                    top_p=GEMINI_CONFIG["top_p"],
-                    top_k=GEMINI_CONFIG["top_k"],
-                ),
-                system_instruction=SYSTEM_PROMPT
-            )
-            logger.info(f"✅ Gemini client initialized: {GEMINI_CONFIG['model']}")
+            if USE_NEW_SDK:
+                # New google.genai SDK
+                self.client = genai.Client(api_key=self.api_key)
+                logger.info(f"✅ Gemini client initialized (new SDK): {GEMINI_CONFIG['model']}")
+            else:
+                # Legacy google.generativeai SDK
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel(
+                    model_name=GEMINI_CONFIG["model"],
+                    generation_config=genai.GenerationConfig(
+                        temperature=GEMINI_CONFIG["temperature"],
+                        max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
+                        top_p=GEMINI_CONFIG["top_p"],
+                        top_k=GEMINI_CONFIG["top_k"],
+                    ),
+                    system_instruction=SYSTEM_PROMPT
+                )
+                logger.info(f"✅ Gemini client initialized (legacy SDK): {GEMINI_CONFIG['model']}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Gemini: {e}")
             raise
@@ -190,19 +205,36 @@ Respond with ONLY valid JSON, no other text."""
             try:
                 logger.info(f"🤖 Calling Gemini API (attempt {attempt + 1})")
                 
-                response = self.model.generate_content(prompt)
-                
-                if response and response.text:
-                    logger.info("✅ Gemini response received")
-                    return response.text
+                if USE_NEW_SDK:
+                    # New SDK call
+                    response = self.client.models.generate_content(
+                        model=GEMINI_CONFIG["model"],
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=GEMINI_CONFIG["temperature"],
+                            max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
+                            top_p=GEMINI_CONFIG["top_p"],
+                            top_k=GEMINI_CONFIG["top_k"],
+                            system_instruction=SYSTEM_PROMPT,
+                        )
+                    )
+                    if response and response.text:
+                        logger.info("✅ Gemini response received")
+                        return response.text
                 else:
-                    logger.warning("⚠️ Empty response from Gemini")
+                    # Legacy SDK call
+                    response = self.model.generate_content(prompt)
+                    if response and response.text:
+                        logger.info("✅ Gemini response received")
+                        return response.text
+                
+                logger.warning("⚠️ Empty response from Gemini")
                     
             except Exception as e:
                 error_msg = str(e).lower()
                 
                 # Check for rate limit errors
-                if "429" in str(e) or "quota" in error_msg or "rate" in error_msg:
+                if "429" in str(e) or "quota" in error_msg or "rate" in error_msg or "resource" in error_msg:
                     wait_time = min(
                         RETRY_CONFIG["base_delay"] * (2 ** attempt),
                         RETRY_CONFIG["max_delay"]
@@ -223,7 +255,8 @@ Respond with ONLY valid JSON, no other text."""
                     wait_time = RETRY_CONFIG["base_delay"] * (2 ** attempt)
                     time.sleep(wait_time)
                 else:
-                    raise
+                    # Don't raise, return None to trigger fallback
+                    return None
         
         return None
     
@@ -267,9 +300,10 @@ Respond with ONLY valid JSON, no other text."""
         """Validate and normalize the parsed response"""
         
         # Required fields with defaults
+        # NOTE: Using 'score' to match app.py expectations (not 'confidence')
         defaults = {
             "recommendation": "HOLD",
-            "confidence": 0.5,
+            "score": 0.5,  # app.py expects 'score', not 'confidence'
             "insight": "Unable to generate detailed analysis.",
             "reasoning": "Insufficient data for confident recommendation.",
             "risks": [
@@ -290,6 +324,10 @@ Respond with ONLY valid JSON, no other text."""
             if key in parsed and parsed[key] is not None:
                 result[key] = parsed[key]
         
+        # Handle 'confidence' -> 'score' mapping (Gemini may return either)
+        if "confidence" in parsed and parsed["confidence"] is not None:
+            result["score"] = parsed["confidence"]
+        
         # Validate recommendation
         valid_recs = ["BUY", "SELL", "HOLD"]
         if result["recommendation"].upper() not in valid_recs:
@@ -297,11 +335,11 @@ Respond with ONLY valid JSON, no other text."""
         else:
             result["recommendation"] = result["recommendation"].upper()
         
-        # Validate confidence
+        # Validate score (0.0 to 1.0)
         try:
-            result["confidence"] = max(0.0, min(1.0, float(result["confidence"])))
+            result["score"] = max(0.0, min(1.0, float(result["score"])))
         except (TypeError, ValueError):
-            result["confidence"] = 0.5
+            result["score"] = 0.5
         
         # Ensure risks is a list
         if not isinstance(result["risks"], list):
@@ -429,7 +467,7 @@ Respond with ONLY valid JSON, no other text."""
         
         return {
             "recommendation": recommendation,
-            "confidence": 0.50,
+            "score": 0.50,  # Use 'score' to match app.py expectations
             "insight": f"{coin_symbol} analysis: {reasoning}. "
                       f"Model agreement: {model_agreement:.0%}. "
                       f"Consider waiting for clearer signals.",
@@ -510,7 +548,7 @@ def generate_insights(
         # Return safe fallback
         return {
             "recommendation": "HOLD",
-            "confidence": 0.40,
+            "score": 0.40,  # Use 'score' to match app.py expectations
             "insight": f"Unable to analyze {coin_symbol} due to API error. "
                       f"Please verify your Gemini API key in Streamlit secrets.",
             "reasoning": f"API initialization failed: {str(e)[:100]}",
