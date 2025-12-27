@@ -25,13 +25,14 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 # Model priority list - will try in order until one works
-# As of Dec 2025, gemini-2.0-flash-exp has very limited free tier (~20/day)
-# gemini-1.5-flash and gemini-2.0-flash-lite have better limits
+# Correct model names as of Dec 2025 (from ai.google.dev/gemini-api/docs/models)
+# Free tier limits were slashed in Dec 2025 - most models now ~20/day
 GEMINI_MODELS = [
-    "gemini-2.0-flash-lite",    # Best free tier limits (~1000/day)
-    "gemini-1.5-flash",          # Good fallback, stable
-    "gemini-2.0-flash-exp",      # Original, but rate limited
-    "gemini-1.5-flash-latest",   # Another fallback
+    "gemini-2.0-flash-lite",        # Best free tier (highest quota)
+    "gemini-2.5-flash-lite",        # Good alternative
+    "gemini-2.0-flash",             # Stable 2.0
+    "gemini-2.5-flash",             # Stable 2.5
+    "gemini-2.0-flash-exp",         # Experimental (limited)
 ]
 
 GEMINI_CONFIG = {
@@ -262,15 +263,21 @@ Respond with ONLY valid JSON, no other text."""
                         
                 except Exception as e:
                     error_msg = str(e).lower()
+                    error_str = str(e)
                     
-                    # Check for rate limit / quota errors
+                    # Check for model not found errors (404) FIRST - skip to next model immediately
+                    if "404" in error_str or "not found" in error_msg or "not_found" in error_msg:
+                        logger.warning(f"⚠️ Model {model_name} not found, trying next...")
+                        break  # Try next model immediately
+                    
+                    # Check for rate limit / quota errors (429)
                     is_rate_limit = any(x in error_msg for x in [
                         "429", "quota", "rate", "resource", "exhausted", 
                         "limit", "capacity", "overloaded"
                     ])
                     
                     if is_rate_limit:
-                        logger.warning(f"⚠️ Rate limited on {model_name}: {str(e)[:100]}")
+                        logger.warning(f"⚠️ Rate limited on {model_name}: {error_str[:100]}")
                         
                         # If last attempt for this model, try next model
                         if attempt >= RETRY_CONFIG["max_retries"] - 1:
@@ -285,11 +292,6 @@ Respond with ONLY valid JSON, no other text."""
                         logger.info(f"   Waiting {wait_time}s before retry...")
                         time.sleep(wait_time)
                         continue
-                    
-                    # Check for model not found errors
-                    if "not found" in error_msg or "invalid" in error_msg:
-                        logger.warning(f"⚠️ Model {model_name} not available, trying next...")
-                        break  # Try next model
                     
                     # Check for safety filter blocks
                     if "safety" in error_msg or "blocked" in error_msg:
@@ -771,6 +773,23 @@ class RuleBasedInsightGenerator:
             return generator._generate_fallback_response(
                 coin_symbol, market_data, prediction_data, technical_indicators
             )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
