@@ -1178,9 +1178,8 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
     price_change_24h = market['pct_change_24h']
     
     # Get recommendation
-    recommendation = insights.get('recommendation', 'HOLD')
-    # Handle both old format ('score') and potential missing key
-    confidence = insights.get('score', insights.get('confidence', 0.5))
+    recommendation = insights['recommendation']
+    confidence = insights['score']
     
     if "BUY" in recommendation.upper():
         rec_color = "#10b981"
@@ -1695,13 +1694,6 @@ def main():
     if 'last_horizon' not in st.session_state:
         st.session_state.last_horizon = 7
     
-    # Invalidate stale cached results that don't have required keys
-    if st.session_state.last_result:
-        insights = st.session_state.last_result.get('insights', {})
-        if 'score' not in insights and 'confidence' not in insights:
-            st.session_state.last_result = None
-            st.info("🔄 Cache cleared - please run a new analysis")
-    
     # Quick actions
     st.markdown("##### 🚀 Quick Start")
     cols = st.columns(len(COINS))
@@ -1752,13 +1744,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
 
 
 
