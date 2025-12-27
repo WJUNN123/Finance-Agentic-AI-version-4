@@ -417,7 +417,7 @@ Respond with ONLY valid JSON, no other text."""
             result = self._validate_response(parsed)
             
             logger.info(f"✅ Gemini insight: {result['recommendation']} "
-                       f"(confidence: {result['confidence']:.0%})")
+                       f"(score: {result['score']:.0%})")
             
             return result
             
@@ -613,6 +613,7 @@ class RuleBasedInsightGenerator:
             return generator._generate_fallback_response(
                 coin_symbol, market_data, prediction_data, technical_indicators
             )
+
 
 
 
