@@ -24,8 +24,19 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================================
 
+# Model priority list - will try in order until one works
+# As of Dec 2025, gemini-2.0-flash-exp has very limited free tier (~20/day)
+# gemini-1.5-flash and gemini-2.0-flash-lite have better limits
+GEMINI_MODELS = [
+    "gemini-2.0-flash-lite",    # Best free tier limits (~1000/day)
+    "gemini-1.5-flash",          # Good fallback, stable
+    "gemini-2.0-flash-exp",      # Original, but rate limited
+    "gemini-1.5-flash-latest",   # Another fallback
+]
+
 GEMINI_CONFIG = {
-    "model": "gemini-2.0-flash-exp",
+    "model": GEMINI_MODELS[0],  # Primary model
+    "fallback_models": GEMINI_MODELS[1:],  # Fallbacks if primary fails
     "temperature": 0.3,
     "max_output_tokens": 1024,
     "top_p": 0.9,
@@ -34,9 +45,9 @@ GEMINI_CONFIG = {
 
 # Retry configuration for rate limits
 RETRY_CONFIG = {
-    "max_retries": 3,
-    "base_delay": 2,  # seconds
-    "max_delay": 10,
+    "max_retries": 2,  # Reduced - faster failover to fallback model
+    "base_delay": 1,   # seconds - reduced for faster response
+    "max_delay": 5,
 }
 
 
@@ -95,6 +106,7 @@ class GeminiInsightGenerator:
         self.api_key = api_key
         self.model = None
         self.client = None
+        self.current_model = GEMINI_CONFIG["model"]
         self._initialize_client()
     
     def _initialize_client(self):
@@ -103,24 +115,29 @@ class GeminiInsightGenerator:
             if USE_NEW_SDK:
                 # New google.genai SDK
                 self.client = genai.Client(api_key=self.api_key)
-                logger.info(f"✅ Gemini client initialized (new SDK): {GEMINI_CONFIG['model']}")
+                logger.info(f"✅ Gemini client initialized (new SDK): {self.current_model}")
             else:
                 # Legacy google.generativeai SDK
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel(
-                    model_name=GEMINI_CONFIG["model"],
-                    generation_config=genai.GenerationConfig(
-                        temperature=GEMINI_CONFIG["temperature"],
-                        max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
-                        top_p=GEMINI_CONFIG["top_p"],
-                        top_k=GEMINI_CONFIG["top_k"],
-                    ),
-                    system_instruction=SYSTEM_PROMPT
-                )
-                logger.info(f"✅ Gemini client initialized (legacy SDK): {GEMINI_CONFIG['model']}")
+                self._create_model(self.current_model)
+                logger.info(f"✅ Gemini client initialized (legacy SDK): {self.current_model}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Gemini: {e}")
             raise
+    
+    def _create_model(self, model_name: str):
+        """Create a GenerativeModel instance for legacy SDK"""
+        self.model = genai.GenerativeModel(
+            model_name=model_name,
+            generation_config=genai.GenerationConfig(
+                temperature=GEMINI_CONFIG["temperature"],
+                max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
+                top_p=GEMINI_CONFIG["top_p"],
+                top_k=GEMINI_CONFIG["top_k"],
+            ),
+            system_instruction=SYSTEM_PROMPT
+        )
+        self.current_model = model_name
     
     def _build_analysis_prompt(
         self,
@@ -199,65 +216,96 @@ Respond with ONLY valid JSON, no other text."""
         return prompt
     
     def _call_gemini_with_retry(self, prompt: str) -> Optional[str]:
-        """Call Gemini API with exponential backoff retry"""
+        """Call Gemini API with model fallback and exponential backoff retry"""
         
-        for attempt in range(RETRY_CONFIG["max_retries"]):
-            try:
-                logger.info(f"🤖 Calling Gemini API (attempt {attempt + 1})")
-                
-                if USE_NEW_SDK:
-                    # New SDK call
-                    response = self.client.models.generate_content(
-                        model=GEMINI_CONFIG["model"],
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            temperature=GEMINI_CONFIG["temperature"],
-                            max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
-                            top_p=GEMINI_CONFIG["top_p"],
-                            top_k=GEMINI_CONFIG["top_k"],
-                            system_instruction=SYSTEM_PROMPT,
-                        )
-                    )
-                    if response and response.text:
-                        logger.info("✅ Gemini response received")
-                        return response.text
-                else:
-                    # Legacy SDK call
-                    response = self.model.generate_content(prompt)
-                    if response and response.text:
-                        logger.info("✅ Gemini response received")
-                        return response.text
-                
-                logger.warning("⚠️ Empty response from Gemini")
+        # Build list of models to try
+        models_to_try = [self.current_model] + [
+            m for m in GEMINI_CONFIG.get("fallback_models", []) 
+            if m != self.current_model
+        ]
+        
+        for model_name in models_to_try:
+            logger.info(f"🤖 Trying model: {model_name}")
+            
+            for attempt in range(RETRY_CONFIG["max_retries"]):
+                try:
+                    logger.info(f"   Attempt {attempt + 1}/{RETRY_CONFIG['max_retries']}")
                     
-            except Exception as e:
-                error_msg = str(e).lower()
-                
-                # Check for rate limit errors
-                if "429" in str(e) or "quota" in error_msg or "rate" in error_msg or "resource" in error_msg:
-                    wait_time = min(
-                        RETRY_CONFIG["base_delay"] * (2 ** attempt),
-                        RETRY_CONFIG["max_delay"]
-                    )
-                    logger.warning(f"⚠️ Rate limited. Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                    continue
-                
-                # Check for safety filter blocks
-                if "safety" in error_msg or "blocked" in error_msg:
-                    logger.warning("⚠️ Response blocked by safety filter")
-                    return None
-                
-                # Other errors
-                logger.error(f"❌ Gemini API error: {e}")
-                
-                if attempt < RETRY_CONFIG["max_retries"] - 1:
-                    wait_time = RETRY_CONFIG["base_delay"] * (2 ** attempt)
-                    time.sleep(wait_time)
-                else:
-                    # Don't raise, return None to trigger fallback
-                    return None
+                    if USE_NEW_SDK:
+                        # New SDK call
+                        response = self.client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                temperature=GEMINI_CONFIG["temperature"],
+                                max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
+                                top_p=GEMINI_CONFIG["top_p"],
+                                top_k=GEMINI_CONFIG["top_k"],
+                                system_instruction=SYSTEM_PROMPT,
+                            )
+                        )
+                        if response and response.text:
+                            logger.info(f"✅ Response received from {model_name}")
+                            self.current_model = model_name  # Remember working model
+                            return response.text
+                    else:
+                        # Legacy SDK call - switch model if needed
+                        if self.current_model != model_name:
+                            self._create_model(model_name)
+                        
+                        response = self.model.generate_content(prompt)
+                        if response and response.text:
+                            logger.info(f"✅ Response received from {model_name}")
+                            return response.text
+                    
+                    logger.warning(f"⚠️ Empty response from {model_name}")
+                        
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    
+                    # Check for rate limit / quota errors
+                    is_rate_limit = any(x in error_msg for x in [
+                        "429", "quota", "rate", "resource", "exhausted", 
+                        "limit", "capacity", "overloaded"
+                    ])
+                    
+                    if is_rate_limit:
+                        logger.warning(f"⚠️ Rate limited on {model_name}: {str(e)[:100]}")
+                        
+                        # If last attempt for this model, try next model
+                        if attempt >= RETRY_CONFIG["max_retries"] - 1:
+                            logger.info(f"🔄 Switching to next model...")
+                            break  # Exit retry loop, try next model
+                        
+                        # Wait before retry
+                        wait_time = min(
+                            RETRY_CONFIG["base_delay"] * (2 ** attempt),
+                            RETRY_CONFIG["max_delay"]
+                        )
+                        logger.info(f"   Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    
+                    # Check for model not found errors
+                    if "not found" in error_msg or "invalid" in error_msg:
+                        logger.warning(f"⚠️ Model {model_name} not available, trying next...")
+                        break  # Try next model
+                    
+                    # Check for safety filter blocks
+                    if "safety" in error_msg or "blocked" in error_msg:
+                        logger.warning("⚠️ Response blocked by safety filter")
+                        return None
+                    
+                    # Other errors
+                    logger.error(f"❌ Gemini API error: {e}")
+                    
+                    if attempt < RETRY_CONFIG["max_retries"] - 1:
+                        wait_time = RETRY_CONFIG["base_delay"] * (2 ** attempt)
+                        time.sleep(wait_time)
+                    else:
+                        break  # Try next model
         
+        logger.error("❌ All models failed, using fallback")
         return None
     
     def _parse_json_response(self, response_text: str) -> Optional[Dict]:
@@ -436,13 +484,15 @@ Respond with ONLY valid JSON, no other text."""
     ) -> Dict:
         """Generate a safe fallback response when Gemini fails"""
         
-        logger.info("📋 Using fallback rule-based response")
+        logger.info("📋 Using enhanced fallback rule-based response")
         
-        # Simple rule-based fallback
+        # Extract data
         ensemble_preds = prediction_data.get('ensemble', [])
         current_price = market_data.get('price_usd', 0)
         model_agreement = prediction_data.get('model_agreement', 0.5)
         rsi = technical_indicators.get('rsi', 50)
+        trend = technical_indicators.get('trend', 'sideways')
+        volatility = technical_indicators.get('volatility', 0.05)
         
         # Calculate expected ROI
         if ensemble_preds and current_price > 0:
@@ -451,42 +501,150 @@ Respond with ONLY valid JSON, no other text."""
         else:
             expected_roi = 0
         
-        # Simple decision logic
-        if model_agreement < 0.6:
+        # Enhanced scoring system
+        bullish_score = 0
+        bearish_score = 0
+        factors = []
+        
+        # 1. Forecast direction and magnitude
+        if expected_roi > 8:
+            bullish_score += 3
+            factors.append(f"Strong +{expected_roi:.1f}% forecast")
+        elif expected_roi > 4:
+            bullish_score += 2
+            factors.append(f"Positive +{expected_roi:.1f}% forecast")
+        elif expected_roi > 2:
+            bullish_score += 1
+        elif expected_roi < -8:
+            bearish_score += 3
+            factors.append(f"Bearish {expected_roi:.1f}% forecast")
+        elif expected_roi < -4:
+            bearish_score += 2
+        elif expected_roi < -2:
+            bearish_score += 1
+        
+        # 2. Model agreement (high agreement = confidence boost)
+        if model_agreement > 0.85:
+            if expected_roi > 0:
+                bullish_score += 2
+            else:
+                bearish_score += 2
+            factors.append(f"High model consensus ({model_agreement:.0%})")
+        elif model_agreement > 0.70:
+            if expected_roi > 0:
+                bullish_score += 1
+            else:
+                bearish_score += 1
+        elif model_agreement < 0.50:
+            # Low agreement reduces confidence
+            bullish_score = max(0, bullish_score - 1)
+            bearish_score = max(0, bearish_score - 1)
+            factors.append(f"Low model agreement ({model_agreement:.0%})")
+        
+        # 3. RSI signals
+        if rsi < 30:
+            bullish_score += 2
+            factors.append(f"Oversold (RSI {rsi:.0f})")
+        elif rsi < 40:
+            bullish_score += 1
+        elif rsi > 70:
+            bearish_score += 2
+            factors.append(f"Overbought (RSI {rsi:.0f})")
+        elif rsi > 60:
+            bearish_score += 1
+        
+        # 4. Trend alignment
+        if trend in ["uptrend", "strong_uptrend"]:
+            bullish_score += 1
+            factors.append("Uptrend momentum")
+        elif trend in ["downtrend", "strong_downtrend"]:
+            bearish_score += 1
+            factors.append("Downtrend pressure")
+        
+        # 5. Volatility consideration
+        if volatility > 0.08:
+            factors.append(f"High volatility ({volatility:.1%})")
+        
+        # Calculate net score and make decision
+        net_score = bullish_score - bearish_score
+        
+        # Decision logic
+        if model_agreement < 0.50:
             recommendation = "HOLD"
-            reasoning = f"Low model agreement ({model_agreement:.0%}) creates uncertainty"
-        elif expected_roi > 5 and rsi < 65:
+            confidence = 0.45
+            reasoning = f"Low model agreement ({model_agreement:.0%}) creates too much uncertainty"
+        elif net_score >= 3:
             recommendation = "BUY"
-            reasoning = f"Positive {expected_roi:+.1f}% forecast with RSI {rsi:.0f}"
-        elif expected_roi < -5 and rsi > 60:
+            confidence = min(0.85, 0.60 + net_score * 0.05)
+            reasoning = f"Strong bullish signals: {expected_roi:+.1f}% forecast, RSI {rsi:.0f}, {model_agreement:.0%} consensus"
+        elif net_score >= 1 and expected_roi > 3:
+            recommendation = "BUY"
+            confidence = min(0.75, 0.55 + net_score * 0.05)
+            reasoning = f"Bullish setup: {expected_roi:+.1f}% forecast supported by {model_agreement:.0%} model agreement"
+        elif net_score <= -3:
             recommendation = "SELL"
-            reasoning = f"Negative {expected_roi:+.1f}% forecast with RSI {rsi:.0f}"
+            confidence = min(0.80, 0.60 + abs(net_score) * 0.05)
+            reasoning = f"Bearish signals: {expected_roi:+.1f}% forecast, RSI {rsi:.0f}"
+        elif net_score <= -1 and expected_roi < -3:
+            recommendation = "SELL"
+            confidence = min(0.70, 0.55 + abs(net_score) * 0.05)
+            reasoning = f"Bearish setup: {expected_roi:+.1f}% forecast with weakening technicals"
         else:
             recommendation = "HOLD"
-            reasoning = f"Mixed signals with {expected_roi:+.1f}% forecast"
+            confidence = 0.55
+            reasoning = f"Mixed signals with {expected_roi:+.1f}% forecast and RSI {rsi:.0f}"
+        
+        # Build insight text
+        if recommendation == "BUY":
+            insight = (f"{coin_symbol} shows bullish setup with {expected_roi:+.1f}% expected return over forecast period. "
+                      f"Model agreement at {model_agreement:.0%} supports conviction. "
+                      f"RSI {rsi:.0f} suggests {'good entry point' if rsi < 50 else 'momentum continues'}.")
+        elif recommendation == "SELL":
+            insight = (f"{coin_symbol} shows bearish signals with {expected_roi:+.1f}% projected move. "
+                      f"Consider reducing exposure or taking profits. "
+                      f"RSI {rsi:.0f} indicates {'potential bounce but trend remains weak' if rsi < 40 else 'downside risk'}.")
+        else:
+            insight = (f"{coin_symbol} presents mixed signals with {expected_roi:+.1f}% forecast. "
+                      f"Model agreement: {model_agreement:.0%}. "
+                      f"Wait for clearer directional confirmation before taking action.")
+        
+        # Generate risks
+        risks = []
+        if volatility > 0.05:
+            risks.append(f"Elevated volatility ({volatility:.1%}) increases position risk")
+        if model_agreement < 0.70:
+            risks.append(f"Model divergence ({model_agreement:.0%}) reduces forecast reliability")
+        if abs(expected_roi) < 3:
+            risks.append("Limited upside potential may not justify entry")
+        
+        # Add default risks if needed
+        default_risks = [
+            "Cryptocurrency markets remain highly volatile",
+            "External factors may override technical signals",
+            "Always use proper position sizing and stop-losses"
+        ]
+        while len(risks) < 3:
+            for risk in default_risks:
+                if risk not in risks and len(risks) < 3:
+                    risks.append(risk)
+                    break
         
         return {
             "recommendation": recommendation,
-            "score": 0.50,  # Use 'score' to match app.py expectations
-            "insight": f"{coin_symbol} analysis: {reasoning}. "
-                      f"Model agreement: {model_agreement:.0%}. "
-                      f"Consider waiting for clearer signals.",
+            "score": confidence,
+            "insight": insight,
             "reasoning": reasoning,
-            "risks": [
-                "Fallback analysis has limited depth",
-                "Market conditions may change rapidly",
-                "Always use proper risk management"
-            ],
-            "key_factors": [
+            "risks": risks[:3],
+            "key_factors": factors[:4] if factors else [
                 f"Forecast: {expected_roi:+.1f}%",
                 f"RSI: {rsi:.0f}",
                 f"Model Agreement: {model_agreement:.0%}"
             ],
-            "entry_price": None,
-            "target_price": None,
-            "stop_loss": None,
-            "source": "fallback_rules",
-            "model": "rule_based_v1"
+            "entry_price": technical_indicators.get('support') if recommendation == "BUY" else None,
+            "target_price": predicted_price if recommendation == "BUY" else None,
+            "stop_loss": technical_indicators.get('support', current_price * 0.95) * 0.95 if recommendation == "BUY" else None,
+            "source": "enhanced_fallback",
+            "model": "rule_based_v2"
         }
 
 
@@ -613,14 +771,6 @@ class RuleBasedInsightGenerator:
             return generator._generate_fallback_response(
                 coin_symbol, market_data, prediction_data, technical_indicators
             )
-
-
-
-
-
-
-
-
 
 
 
