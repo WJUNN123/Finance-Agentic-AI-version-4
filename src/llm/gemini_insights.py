@@ -56,14 +56,14 @@ RETRY_CONFIG = {
 # SYSTEM PROMPT
 # ============================================================================
 
-SYSTEM_PROMPT = """You are an expert cryptocurrency analyst providing actionable investment insights.
+SYSTEM_PROMPT = """You are an expert cryptocurrency trader providing actionable investment insights. You favor taking calculated positions when data supports it, rather than defaulting to HOLD.
 
 CRITICAL RULES:
 1. You MUST respond ONLY with valid JSON - no markdown, no explanations outside JSON
 2. Base recommendations strictly on the data provided - do not invent numbers
 3. Be specific about price levels, timeframes, and risk factors
-4. Always include concrete reasoning tied to the metrics shown
-5. If data quality is poor (low model agreement, high uncertainty), recommend HOLD
+4. Always include concrete entry_price, target_price, and stop_loss for BUY/SELL recommendations
+5. RSI below 40 is a BULLISH signal (oversold), RSI above 60 is BEARISH (overbought)
 
 OUTPUT FORMAT (strict JSON):
 {
@@ -73,21 +73,43 @@ OUTPUT FORMAT (strict JSON):
     "reasoning": "1-2 sentences explaining the key factors driving this recommendation",
     "risks": ["risk 1", "risk 2", "risk 3"],
     "key_factors": ["factor 1", "factor 2", "factor 3"],
-    "entry_price": null or number,
-    "target_price": null or number,
-    "stop_loss": null or number
+    "entry_price": number (use support level for BUY, current price for SELL),
+    "target_price": number (use forecast price or resistance),
+    "stop_loss": number (typically 3-5% below entry for BUY)
 }
 
-DECISION FRAMEWORK:
-- BUY: Positive forecast (>5%), RSI < 65, model agreement > 70%, bullish trend
-- SELL: Negative forecast (<-5%), RSI > 70, bearish trend, high risk signals
-- HOLD: Mixed signals, low model agreement (<60%), minimal forecast (<3%), high uncertainty
+DECISION FRAMEWORK (be decisive, not overly cautious):
+- BUY signals (need 2+ of these):
+  * Positive forecast (>2.5%)
+  * RSI < 45 (approaching oversold = buying opportunity)
+  * Model agreement > 75%
+  * Price near support level
+  * Low volatility (<5%) = safer entry
+  
+- SELL signals (need 2+ of these):
+  * Negative forecast (<-2.5%)
+  * RSI > 65 (approaching overbought)
+  * Bearish trend confirmed
+  * Price near resistance
+  
+- HOLD only when:
+  * Model agreement < 55% (models disagree significantly)
+  * Forecast between -2% and +2% (no clear direction)
+  * Conflicting signals that cannot be resolved
 
-SAFETY OVERRIDES (always force HOLD):
-- Model agreement < 50%
-- Extreme volatility (>15%) with low confidence
-- Conflicting trend vs forecast signals
-- Insufficient data quality"""
+CONFIDENCE SCORING:
+- 0.80-1.00: Strong conviction (3+ aligned signals)
+- 0.65-0.79: Moderate conviction (2 aligned signals)
+- 0.50-0.64: Low conviction (mixed signals, use for HOLD)
+- Below 0.50: Do not use
+
+IMPORTANT INTERPRETATIONS:
+- RSI 30-40: Oversold territory = BULLISH (good buying opportunity)
+- RSI 60-70: Overbought territory = BEARISH (consider selling)
+- High model agreement (>80%) should INCREASE confidence, not be ignored
+- Low volatility is GOOD for taking positions (more predictable)
+
+ALWAYS provide specific entry_price, target_price, and stop_loss when recommending BUY or SELL."""
 
 
 # ============================================================================
@@ -140,6 +162,52 @@ class GeminiInsightGenerator:
         )
         self.current_model = model_name
     
+    def _count_bullish_signals(self, expected_roi: float, technical_indicators: Dict, 
+                                model_agreement: float, sentiment_data: Dict) -> str:
+        """Count and list bullish signals"""
+        signals = []
+        
+        if expected_roi > 2.5:
+            signals.append(f"+{expected_roi:.1f}% forecast")
+        if technical_indicators.get('rsi', 50) < 40:
+            signals.append(f"RSI oversold ({technical_indicators.get('rsi', 50):.0f})")
+        if model_agreement > 0.75:
+            signals.append(f"High model agreement ({model_agreement:.0%})")
+        if technical_indicators.get('macd_histogram', 0) > 0:
+            signals.append("MACD bullish")
+        if technical_indicators.get('volatility', 0.05) < 0.03:
+            signals.append("Low volatility")
+        if sentiment_data.get('score', 0) > 0.2:
+            signals.append("Positive sentiment")
+        if technical_indicators.get('trend', '') in ['uptrend', 'strong_uptrend']:
+            signals.append("Uptrend")
+            
+        if not signals:
+            return "None identified"
+        return f"{len(signals)} signals: " + ", ".join(signals)
+    
+    def _count_bearish_signals(self, expected_roi: float, technical_indicators: Dict,
+                                sentiment_data: Dict) -> str:
+        """Count and list bearish signals"""
+        signals = []
+        
+        if expected_roi < -2.5:
+            signals.append(f"{expected_roi:.1f}% forecast")
+        if technical_indicators.get('rsi', 50) > 65:
+            signals.append(f"RSI overbought ({technical_indicators.get('rsi', 50):.0f})")
+        if technical_indicators.get('macd_histogram', 0) < 0:
+            signals.append("MACD bearish")
+        if technical_indicators.get('volatility', 0.05) > 0.10:
+            signals.append("High volatility")
+        if sentiment_data.get('score', 0) < -0.2:
+            signals.append("Negative sentiment")
+        if technical_indicators.get('trend', '') in ['downtrend', 'strong_downtrend']:
+            signals.append("Downtrend")
+            
+        if not signals:
+            return "None identified"
+        return f"{len(signals)} signals: " + ", ".join(signals)
+    
     def _build_analysis_prompt(
         self,
         coin_symbol: str,
@@ -183,19 +251,19 @@ Market Cap: ${market_data.get('market_cap', 0):,.0f}
 {format_preds(xgb_preds, 'XGBoost Model')}
 {format_preds(ensemble_preds, 'Ensemble (Final)')}
 Expected ROI: {expected_roi:+.2f}%
-Model Agreement: {model_agreement:.0%}
+Model Agreement: {model_agreement:.0%} {"⚠️ LOW - models disagree" if model_agreement < 0.6 else "✅ HIGH - models agree" if model_agreement > 0.8 else ""}
 
 === TECHNICAL INDICATORS ===
-RSI (14): {technical_indicators.get('rsi', 50):.1f}
+RSI (14): {technical_indicators.get('rsi', 50):.1f} {"📈 OVERSOLD (bullish)" if technical_indicators.get('rsi', 50) < 40 else "📉 OVERBOUGHT (bearish)" if technical_indicators.get('rsi', 50) > 65 else "(neutral)"}
 Trend: {technical_indicators.get('trend', 'unknown')}
-Volatility: {technical_indicators.get('volatility', 0):.2%}
+Volatility: {technical_indicators.get('volatility', 0):.2%} {"(low risk)" if technical_indicators.get('volatility', 0) < 0.03 else "(elevated)" if technical_indicators.get('volatility', 0) > 0.08 else ""}
 Momentum (14d): {technical_indicators.get('momentum', 0):+.1f}%
-MACD Histogram: {technical_indicators.get('macd_histogram', 0):.4f}
+MACD Histogram: {technical_indicators.get('macd_histogram', 0):.4f} {"(bullish)" if technical_indicators.get('macd_histogram', 0) > 0 else "(bearish)"}
 Stochastic %K: {technical_indicators.get('stochastic_k', 50):.1f}
 Stochastic %D: {technical_indicators.get('stochastic_d', 50):.1f}
-Bollinger Position: {technical_indicators.get('bb_position', 0.5):.2f} (0=lower, 1=upper)
-Support: ${technical_indicators.get('support', current_price*0.95):,.2f}
-Resistance: ${technical_indicators.get('resistance', current_price*1.05):,.2f}
+Bollinger Position: {technical_indicators.get('bb_position', 0.5):.2f} (0=lower band, 1=upper band)
+Support Level: ${technical_indicators.get('support', current_price*0.95):,.2f}
+Resistance Level: ${technical_indicators.get('resistance', current_price*1.05):,.2f}
 
 === SENTIMENT ANALYSIS ===
 Overall Score: {sentiment_data.get('score', 0):.2f} (-1 bearish to +1 bullish)
@@ -205,13 +273,18 @@ Breakdown: {sentiment_data.get('breakdown', {}).get('positive', 0):.0f}% positiv
 === RECENT HEADLINES ===
 {chr(10).join(['• ' + h for h in top_headlines[:5]]) if top_headlines else '• No recent headlines available'}
 
-=== TASK ===
-Provide your investment recommendation as JSON only. Consider:
-1. Is the {expected_roi:+.1f}% forecast realistic given technicals?
-2. Does {model_agreement:.0%} model agreement justify confidence?
-3. What are the 3 biggest risks?
-4. Specific entry, target, and stop-loss prices if recommending BUY/SELL
+=== SIGNAL SUMMARY ===
+Bullish signals: {self._count_bullish_signals(expected_roi, technical_indicators, model_agreement, sentiment_data)}
+Bearish signals: {self._count_bearish_signals(expected_roi, technical_indicators, sentiment_data)}
 
+=== YOUR TASK ===
+Based on the above data, provide a decisive recommendation:
+1. With {expected_roi:+.1f}% forecast and {model_agreement:.0%} model agreement, is this a BUY opportunity?
+2. RSI at {technical_indicators.get('rsi', 50):.0f} - is this oversold (bullish) or overbought (bearish)?
+3. MUST provide specific entry_price (use support), target_price (use forecast), stop_loss (3-5% below entry)
+4. List the 3 biggest risks
+
+Be decisive - if signals align, recommend BUY or SELL. Only use HOLD if signals truly conflict.
 Respond with ONLY valid JSON, no other text."""
 
         return prompt
