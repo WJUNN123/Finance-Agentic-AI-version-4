@@ -6,7 +6,7 @@ Generates AI-powered investment insights using Google's Gemini 2.0 Flash
 import json
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Try new SDK first, fall back to old one
 try:
@@ -24,126 +24,250 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================================
 
-# Model priority list - will try in order until one works
-# Correct model names as of Dec 2025 (from ai.google.dev/gemini-api/docs/models)
-# Free tier limits were slashed in Dec 2025 - most models now ~20/day
 GEMINI_MODELS = [
-    "gemini-2.0-flash-lite",        # Best free tier (highest quota)
-    "gemini-2.5-flash-lite",        # Good alternative
-    "gemini-2.0-flash",             # Stable 2.0
-    "gemini-2.5-flash",             # Stable 2.5
-    "gemini-2.0-flash-exp",         # Experimental (limited)
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-exp",
 ]
 
 GEMINI_CONFIG = {
-    "model": GEMINI_MODELS[0],  # Primary model
-    "fallback_models": GEMINI_MODELS[1:],  # Fallbacks if primary fails
+    "model": GEMINI_MODELS[0],
+    "fallback_models": GEMINI_MODELS[1:],
     "temperature": 0.3,
-    "max_output_tokens": 1024,
+    "max_output_tokens": 1500,  # Slightly increased for reflection
     "top_p": 0.9,
     "top_k": 40,
 }
 
-# Retry configuration for rate limits
 RETRY_CONFIG = {
-    "max_retries": 2,  # Reduced - faster failover to fallback model
-    "base_delay": 1,   # seconds - reduced for faster response
+    "max_retries": 2,
+    "base_delay": 1,
     "max_delay": 5,
 }
 
 
 # ============================================================================
-# SYSTEM PROMPT
+# ENHANCED SYSTEM PROMPT WITH CONFLICT RESOLUTION + SELF-REFLECTION
 # ============================================================================
 
-SYSTEM_PROMPT = """You are an expert cryptocurrency trader providing actionable investment insights. You favor taking calculated positions when data supports it, rather than defaulting to HOLD.
+ENHANCED_SYSTEM_PROMPT = """You are an expert cryptocurrency trader. You analyze data carefully, resolve conflicting signals, and self-check your recommendations before finalizing.
 
-CRITICAL RULES:
-1. You MUST respond ONLY with valid JSON - no markdown, no explanations outside JSON
-2. Base recommendations strictly on the data provided - do not invent numbers
-3. Be specific about price levels, timeframes, and risk factors
-4. Always include concrete entry_price, target_price, and stop_loss for BUY/SELL recommendations
-5. RSI below 40 is a BULLISH signal (oversold), RSI above 60 is BEARISH (overbought)
+YOUR PROCESS (follow in order):
+1. IDENTIFY CONFLICTS: Note any signals that contradict each other
+2. RESOLVE CONFLICTS: Reason through which signals to trust and why
+3. MAKE RECOMMENDATION: Based on resolved analysis
+4. SELF-REFLECT: Critique your own recommendation - look for errors
+5. FINALIZE: Adjust if your self-reflection found issues
+
+SIGNAL INTERPRETATION RULES:
+- RSI < 35: OVERSOLD = Bullish (buying opportunity)
+- RSI > 65: OVERBOUGHT = Bearish (selling opportunity)
+- RSI 35-65: Neutral zone
+- Positive forecast (>3%): Bullish
+- Negative forecast (<-3%): Bearish
+- High model agreement (>75%): Trust the forecast more
+- Low model agreement (<60%): Be skeptical of forecast
+
+CONFLICT RESOLUTION PRIORITY (when signals disagree):
+1. Model Agreement > 80% → Trust the ML forecast
+2. RSI extreme (<30 or >70) → Trust RSI signal
+3. Strong trend confirmed → Trust trend direction
+4. High sentiment confidence (>70%) → Consider sentiment
+5. When still unclear → Recommend HOLD
 
 OUTPUT FORMAT (strict JSON):
 {
+    "conflicts_detected": [
+        {"signal_1": "what it says", "signal_2": "what it says", "resolution": "which to trust and why"}
+    ],
     "recommendation": "BUY" | "SELL" | "HOLD",
     "score": 0.0-1.0,
-    "insight": "2-3 sentence analysis with specific price targets and timeframe",
-    "reasoning": "1-2 sentences explaining the key factors driving this recommendation",
+    "insight": "2-3 sentence analysis with specific reasoning",
+    "reasoning": "1-2 sentences on key factors",
+    "self_reflection": {
+        "potential_issues": ["any concerns about this recommendation"],
+        "confidence_adjustment": "none" | "reduced" | "increased",
+        "final_check": "passed" | "adjusted"
+    },
     "risks": ["risk 1", "risk 2", "risk 3"],
     "key_factors": ["factor 1", "factor 2", "factor 3"],
-    "entry_price": number (use support level for BUY, current price for SELL),
-    "target_price": number (use forecast price or resistance),
-    "stop_loss": number (typically 3-5% below entry for BUY)
+    "entry_price": number or null,
+    "target_price": number or null,
+    "stop_loss": number or null
 }
 
-DECISION FRAMEWORK (be decisive, not overly cautious):
-- BUY signals (need 2+ of these):
-  * Positive forecast (>2.5%)
-  * RSI < 45 (approaching oversold = buying opportunity)
-  * Model agreement > 75%
-  * Price near support level
-  * Low volatility (<5%) = safer entry
-  
-- SELL signals (need 2+ of these):
-  * Negative forecast (<-2.5%)
-  * RSI > 65 (approaching overbought)
-  * Bearish trend confirmed
-  * Price near resistance
-  
-- HOLD only when:
-  * Model agreement < 55% (models disagree significantly)
-  * Forecast between -2% and +2% (no clear direction)
-  * Conflicting signals that cannot be resolved
-
-CONFIDENCE SCORING:
-- 0.80-1.00: Strong conviction (3+ aligned signals)
-- 0.65-0.79: Moderate conviction (2 aligned signals)
-- 0.50-0.64: Low conviction (mixed signals, use for HOLD)
-- Below 0.50: Do not use
-
-IMPORTANT INTERPRETATIONS:
-- RSI 30-40: Oversold territory = BULLISH (good buying opportunity)
-- RSI 60-70: Overbought territory = BEARISH (consider selling)
-- High model agreement (>80%) should INCREASE confidence, not be ignored
-- Low volatility is GOOD for taking positions (more predictable)
-
-ALWAYS provide specific entry_price, target_price, and stop_loss when recommending BUY or SELL."""
+CRITICAL: Respond with ONLY valid JSON. No other text."""
 
 
 # ============================================================================
-# GEMINI CLIENT
+# CONFLICT DETECTION (Pre-processing before LLM call)
 # ============================================================================
 
-class GeminiInsightGenerator:
-    """Generates investment insights using Gemini 2.0 Flash API"""
+class ConflictDetector:
+    """Detects conflicts between different signals before LLM analysis"""
+    
+    @staticmethod
+    def detect_conflicts(
+        market_data: Dict,
+        technical_indicators: Dict,
+        sentiment_data: Dict,
+        prediction_data: Dict
+    ) -> List[Dict]:
+        """
+        Detect conflicts between different signal sources.
+        
+        Returns:
+            List of conflict dictionaries with signal details
+        """
+        conflicts = []
+        
+        # Extract values
+        rsi = technical_indicators.get('rsi', 50)
+        trend = technical_indicators.get('trend', 'sideways')
+        macd_hist = technical_indicators.get('macd_histogram', 0)
+        
+        sentiment_score = sentiment_data.get('score', 0)
+        sentiment_conf = sentiment_data.get('confidence', 0.5)
+        
+        ensemble = prediction_data.get('ensemble', [])
+        model_agreement = prediction_data.get('model_agreement', 0.5)
+        
+        current_price = market_data.get('price_usd', 0)
+        
+        # Calculate forecast direction
+        if ensemble and current_price > 0:
+            forecast_change = ((ensemble[-1] - current_price) / current_price) * 100
+        else:
+            forecast_change = 0
+        
+        # === CONFLICT 1: RSI vs Forecast ===
+        rsi_bullish = rsi < 40
+        rsi_bearish = rsi > 60
+        forecast_bullish = forecast_change > 3
+        forecast_bearish = forecast_change < -3
+        
+        if rsi_bullish and forecast_bearish:
+            conflicts.append({
+                "type": "rsi_vs_forecast",
+                "signal_1": f"RSI {rsi:.0f} (oversold = bullish)",
+                "signal_2": f"Forecast {forecast_change:+.1f}% (bearish)",
+                "severity": "high",
+                "suggestion": "RSI may indicate short-term bounce despite bearish forecast"
+            })
+        elif rsi_bearish and forecast_bullish:
+            conflicts.append({
+                "type": "rsi_vs_forecast",
+                "signal_1": f"RSI {rsi:.0f} (overbought = bearish)",
+                "signal_2": f"Forecast {forecast_change:+.1f}% (bullish)",
+                "severity": "high",
+                "suggestion": "Price may pull back before continuing upward"
+            })
+        
+        # === CONFLICT 2: Sentiment vs Technical ===
+        sentiment_bullish = sentiment_score > 0.25 and sentiment_conf > 0.6
+        sentiment_bearish = sentiment_score < -0.25 and sentiment_conf > 0.6
+        technical_bullish = trend == 'uptrend' or (rsi < 40 and macd_hist > 0)
+        technical_bearish = trend == 'downtrend' or (rsi > 60 and macd_hist < 0)
+        
+        if sentiment_bullish and technical_bearish:
+            conflicts.append({
+                "type": "sentiment_vs_technical",
+                "signal_1": f"Sentiment {sentiment_score:+.2f} (bullish news)",
+                "signal_2": f"Technical {trend}, RSI {rsi:.0f} (bearish)",
+                "severity": "medium",
+                "suggestion": "News hasn't reflected in price yet, or market is ignoring it"
+            })
+        elif sentiment_bearish and technical_bullish:
+            conflicts.append({
+                "type": "sentiment_vs_technical",
+                "signal_1": f"Sentiment {sentiment_score:+.2f} (bearish news)",
+                "signal_2": f"Technical {trend}, RSI {rsi:.0f} (bullish)",
+                "severity": "medium",
+                "suggestion": "Price resilient despite negative news - could be a strength signal"
+            })
+        
+        # === CONFLICT 3: LSTM vs XGBoost ===
+        lstm_preds = prediction_data.get('lstm', [])
+        xgb_preds = prediction_data.get('xgboost', [])
+        
+        if lstm_preds and xgb_preds and current_price > 0:
+            lstm_change = ((lstm_preds[-1] - current_price) / current_price) * 100
+            xgb_change = ((xgb_preds[-1] - current_price) / current_price) * 100
+            
+            # Check if models disagree on direction
+            if (lstm_change > 2 and xgb_change < -2) or (lstm_change < -2 and xgb_change > 2):
+                conflicts.append({
+                    "type": "model_disagreement",
+                    "signal_1": f"LSTM: {lstm_change:+.1f}%",
+                    "signal_2": f"XGBoost: {xgb_change:+.1f}%",
+                    "severity": "high",
+                    "suggestion": f"Model agreement only {model_agreement:.0%} - reduce confidence"
+                })
+        
+        # === CONFLICT 4: Short-term vs Long-term ===
+        pct_24h = market_data.get('pct_change_24h', 0)
+        pct_7d = market_data.get('pct_change_7d', 0)
+        
+        if (pct_24h > 5 and pct_7d < -5) or (pct_24h < -5 and pct_7d > 5):
+            conflicts.append({
+                "type": "timeframe_conflict",
+                "signal_1": f"24h: {pct_24h:+.1f}%",
+                "signal_2": f"7d: {pct_7d:+.1f}%",
+                "severity": "low",
+                "suggestion": "Recent reversal - trend may be changing"
+            })
+        
+        return conflicts
+    
+    @staticmethod
+    def get_conflict_summary(conflicts: List[Dict]) -> str:
+        """Format conflicts for the LLM prompt"""
+        if not conflicts:
+            return "No significant conflicts detected. Signals are aligned."
+        
+        lines = [f"⚠️ {len(conflicts)} CONFLICT(S) DETECTED:"]
+        for i, c in enumerate(conflicts, 1):
+            lines.append(f"\n{i}. {c['type'].upper()} [{c['severity']}]")
+            lines.append(f"   • {c['signal_1']}")
+            lines.append(f"   • {c['signal_2']}")
+            lines.append(f"   💡 {c['suggestion']}")
+        
+        return "\n".join(lines)
+
+
+# ============================================================================
+# ENHANCED GEMINI CLIENT
+# ============================================================================
+
+class EnhancedGeminiInsightGenerator:
+    """
+    Enhanced Gemini client with:
+    1. Pre-LLM conflict detection
+    2. Conflict resolution in prompt
+    3. Self-reflection in prompt
+    4. All in a single API call
+    """
     
     def __init__(self, api_key: str):
-        """
-        Initialize Gemini client
-        
-        Args:
-            api_key: Google AI API key
-        """
         self.api_key = api_key
         self.model = None
         self.client = None
         self.current_model = GEMINI_CONFIG["model"]
+        self.conflict_detector = ConflictDetector()
         self._initialize_client()
     
     def _initialize_client(self):
         """Initialize the Gemini client"""
         try:
             if USE_NEW_SDK:
-                # New google.genai SDK
                 self.client = genai.Client(api_key=self.api_key)
-                logger.info(f"✅ Gemini client initialized (new SDK): {self.current_model}")
+                logger.info(f"✅ Enhanced Gemini client initialized: {self.current_model}")
             else:
-                # Legacy google.generativeai SDK
                 genai.configure(api_key=self.api_key)
                 self._create_model(self.current_model)
-                logger.info(f"✅ Gemini client initialized (legacy SDK): {self.current_model}")
+                logger.info(f"✅ Enhanced Gemini client initialized: {self.current_model}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Gemini: {e}")
             raise
@@ -158,57 +282,11 @@ class GeminiInsightGenerator:
                 top_p=GEMINI_CONFIG["top_p"],
                 top_k=GEMINI_CONFIG["top_k"],
             ),
-            system_instruction=SYSTEM_PROMPT
+            system_instruction=ENHANCED_SYSTEM_PROMPT
         )
         self.current_model = model_name
     
-    def _count_bullish_signals(self, expected_roi: float, technical_indicators: Dict, 
-                                model_agreement: float, sentiment_data: Dict) -> str:
-        """Count and list bullish signals"""
-        signals = []
-        
-        if expected_roi > 2.5:
-            signals.append(f"+{expected_roi:.1f}% forecast")
-        if technical_indicators.get('rsi', 50) < 40:
-            signals.append(f"RSI oversold ({technical_indicators.get('rsi', 50):.0f})")
-        if model_agreement > 0.75:
-            signals.append(f"High model agreement ({model_agreement:.0%})")
-        if technical_indicators.get('macd_histogram', 0) > 0:
-            signals.append("MACD bullish")
-        if technical_indicators.get('volatility', 0.05) < 0.03:
-            signals.append("Low volatility")
-        if sentiment_data.get('score', 0) > 0.2:
-            signals.append("Positive sentiment")
-        if technical_indicators.get('trend', '') in ['uptrend', 'strong_uptrend']:
-            signals.append("Uptrend")
-            
-        if not signals:
-            return "None identified"
-        return f"{len(signals)} signals: " + ", ".join(signals)
-    
-    def _count_bearish_signals(self, expected_roi: float, technical_indicators: Dict,
-                                sentiment_data: Dict) -> str:
-        """Count and list bearish signals"""
-        signals = []
-        
-        if expected_roi < -2.5:
-            signals.append(f"{expected_roi:.1f}% forecast")
-        if technical_indicators.get('rsi', 50) > 65:
-            signals.append(f"RSI overbought ({technical_indicators.get('rsi', 50):.0f})")
-        if technical_indicators.get('macd_histogram', 0) < 0:
-            signals.append("MACD bearish")
-        if technical_indicators.get('volatility', 0.05) > 0.10:
-            signals.append("High volatility")
-        if sentiment_data.get('score', 0) < -0.2:
-            signals.append("Negative sentiment")
-        if technical_indicators.get('trend', '') in ['downtrend', 'strong_downtrend']:
-            signals.append("Downtrend")
-            
-        if not signals:
-            return "None identified"
-        return f"{len(signals)} signals: " + ", ".join(signals)
-    
-    def _build_analysis_prompt(
+    def _build_enhanced_prompt(
         self,
         coin_symbol: str,
         market_data: Dict,
@@ -216,28 +294,32 @@ class GeminiInsightGenerator:
         technical_indicators: Dict,
         prediction_data: Dict,
         top_headlines: List[str],
-        horizon_days: int
+        horizon_days: int,
+        conflicts: List[Dict]
     ) -> str:
-        """Build the analysis prompt with all market data"""
+        """Build prompt with conflict info and self-reflection request"""
         
-        # Extract prediction data
+        # Extract data
+        current_price = market_data.get('price_usd', 0)
         ensemble_preds = prediction_data.get('ensemble', [])
         lstm_preds = prediction_data.get('lstm', [])
         xgb_preds = prediction_data.get('xgboost', [])
         model_agreement = prediction_data.get('model_agreement', 0.5)
         
-        # Calculate expected ROI
-        current_price = market_data.get('price_usd', 0)
         predicted_price = ensemble_preds[-1] if ensemble_preds else current_price
         expected_roi = ((predicted_price - current_price) / current_price * 100) if current_price > 0 else 0
         
-        # Format predictions for display
+        # Format predictions
         def format_preds(preds, label):
             if not preds:
                 return f"{label}: No data"
-            return f"{label}: ${preds[0]:,.2f} → ${preds[-1]:,.2f} ({((preds[-1]-preds[0])/preds[0]*100):+.1f}%)"
+            change = ((preds[-1] - preds[0]) / preds[0] * 100) if preds[0] > 0 else 0
+            return f"{label}: ${preds[0]:,.2f} → ${preds[-1]:,.2f} ({change:+.1f}%)"
         
-        prompt = f"""Analyze {coin_symbol} and provide investment recommendation.
+        # Get conflict summary
+        conflict_summary = self.conflict_detector.get_conflict_summary(conflicts)
+        
+        prompt = f"""Analyze {coin_symbol} for a {horizon_days}-day investment decision.
 
 === MARKET DATA ===
 Current Price: ${current_price:,.2f}
@@ -246,53 +328,49 @@ Current Price: ${current_price:,.2f}
 Market Cap: ${market_data.get('market_cap', 0):,.0f}
 24h Volume: ${market_data.get('volume_24h', 0):,.0f}
 
-=== {horizon_days}-DAY PRICE FORECAST ===
-{format_preds(lstm_preds, 'LSTM Model')}
-{format_preds(xgb_preds, 'XGBoost Model')}
-{format_preds(ensemble_preds, 'Ensemble (Final)')}
+=== {horizon_days}-DAY FORECAST ===
+{format_preds(lstm_preds, 'LSTM')}
+{format_preds(xgb_preds, 'XGBoost')}
+{format_preds(ensemble_preds, 'Ensemble')}
 Expected ROI: {expected_roi:+.2f}%
-Model Agreement: {model_agreement:.0%} {"⚠️ LOW - models disagree" if model_agreement < 0.6 else "✅ HIGH - models agree" if model_agreement > 0.8 else ""}
+Model Agreement: {model_agreement:.0%} {"⚠️ LOW" if model_agreement < 0.6 else "✅ HIGH" if model_agreement > 0.8 else ""}
 
 === TECHNICAL INDICATORS ===
-RSI (14): {technical_indicators.get('rsi', 50):.1f} {"📈 OVERSOLD (bullish)" if technical_indicators.get('rsi', 50) < 40 else "📉 OVERBOUGHT (bearish)" if technical_indicators.get('rsi', 50) > 65 else "(neutral)"}
+RSI (14): {technical_indicators.get('rsi', 50):.1f} {"📈 OVERSOLD" if technical_indicators.get('rsi', 50) < 35 else "📉 OVERBOUGHT" if technical_indicators.get('rsi', 50) > 65 else "(neutral)"}
 Trend: {technical_indicators.get('trend', 'unknown')}
-Volatility: {technical_indicators.get('volatility', 0):.2%} {"(low risk)" if technical_indicators.get('volatility', 0) < 0.03 else "(elevated)" if technical_indicators.get('volatility', 0) > 0.08 else ""}
-Momentum (14d): {technical_indicators.get('momentum', 0):+.1f}%
 MACD Histogram: {technical_indicators.get('macd_histogram', 0):.4f} {"(bullish)" if technical_indicators.get('macd_histogram', 0) > 0 else "(bearish)"}
-Stochastic %K: {technical_indicators.get('stochastic_k', 50):.1f}
-Stochastic %D: {technical_indicators.get('stochastic_d', 50):.1f}
-Bollinger Position: {technical_indicators.get('bb_position', 0.5):.2f} (0=lower band, 1=upper band)
-Support Level: ${technical_indicators.get('support', current_price*0.95):,.2f}
-Resistance Level: ${technical_indicators.get('resistance', current_price*1.05):,.2f}
+Volatility: {technical_indicators.get('volatility', 0):.2%}
+Support: ${technical_indicators.get('support', current_price*0.95):,.2f}
+Resistance: ${technical_indicators.get('resistance', current_price*1.05):,.2f}
 
-=== SENTIMENT ANALYSIS ===
-Overall Score: {sentiment_data.get('score', 0):.2f} (-1 bearish to +1 bullish)
+=== SENTIMENT ===
+Score: {sentiment_data.get('score', 0):.2f} (-1 to +1)
 Confidence: {sentiment_data.get('confidence', 0.5):.0%}
-Breakdown: {sentiment_data.get('breakdown', {}).get('positive', 0):.0f}% positive, {sentiment_data.get('breakdown', {}).get('neutral', 0):.0f}% neutral, {sentiment_data.get('breakdown', {}).get('negative', 0):.0f}% negative
+Breakdown: {sentiment_data.get('breakdown', {}).get('positive', 0):.0f}% pos, {sentiment_data.get('breakdown', {}).get('neutral', 0):.0f}% neu, {sentiment_data.get('breakdown', {}).get('negative', 0):.0f}% neg
 
-=== RECENT HEADLINES ===
-{chr(10).join(['• ' + h for h in top_headlines[:5]]) if top_headlines else '• No recent headlines available'}
+=== HEADLINES ===
+{chr(10).join(['• ' + h for h in top_headlines[:5]]) if top_headlines else '• No headlines'}
 
-=== SIGNAL SUMMARY ===
-Bullish signals: {self._count_bullish_signals(expected_roi, technical_indicators, model_agreement, sentiment_data)}
-Bearish signals: {self._count_bearish_signals(expected_roi, technical_indicators, sentiment_data)}
+=== ⚠️ CONFLICT ANALYSIS ===
+{conflict_summary}
 
 === YOUR TASK ===
-Based on the above data, provide a decisive recommendation:
-1. With {expected_roi:+.1f}% forecast and {model_agreement:.0%} model agreement, is this a BUY opportunity?
-2. RSI at {technical_indicators.get('rsi', 50):.0f} - is this oversold (bullish) or overbought (bearish)?
-3. MUST provide specific entry_price (use support), target_price (use forecast), stop_loss (3-5% below entry)
-4. List the 3 biggest risks
+1. RESOLVE any conflicts listed above - explain which signal to trust and why
+2. Make your BUY/SELL/HOLD recommendation
+3. SELF-REFLECT: Before finalizing, ask yourself:
+   - Does my recommendation match the data?
+   - Am I interpreting RSI correctly? (low RSI = bullish, high RSI = bearish)
+   - Is my confidence justified given the model agreement?
+   - Are there any errors in my reasoning?
+4. Adjust your recommendation if self-reflection found issues
 
-Be decisive - if signals align, recommend BUY or SELL. Only use HOLD if signals truly conflict.
-Respond with ONLY valid JSON, no other text."""
+Respond with ONLY valid JSON matching the required format."""
 
         return prompt
     
     def _call_gemini_with_retry(self, prompt: str) -> Optional[str]:
-        """Call Gemini API with model fallback and exponential backoff retry"""
+        """Call Gemini API with retry and model fallback"""
         
-        # Build list of models to try
         models_to_try = [self.current_model] + [
             m for m in GEMINI_CONFIG.get("fallback_models", []) 
             if m != self.current_model
@@ -303,10 +381,7 @@ Respond with ONLY valid JSON, no other text."""
             
             for attempt in range(RETRY_CONFIG["max_retries"]):
                 try:
-                    logger.info(f"   Attempt {attempt + 1}/{RETRY_CONFIG['max_retries']}")
-                    
                     if USE_NEW_SDK:
-                        # New SDK call
                         response = self.client.models.generate_content(
                             model=model_name,
                             contents=prompt,
@@ -315,168 +390,217 @@ Respond with ONLY valid JSON, no other text."""
                                 max_output_tokens=GEMINI_CONFIG["max_output_tokens"],
                                 top_p=GEMINI_CONFIG["top_p"],
                                 top_k=GEMINI_CONFIG["top_k"],
-                                system_instruction=SYSTEM_PROMPT,
+                                system_instruction=ENHANCED_SYSTEM_PROMPT,
                             )
                         )
                         if response and response.text:
-                            logger.info(f"✅ Response received from {model_name}")
-                            self.current_model = model_name  # Remember working model
+                            self.current_model = model_name
                             return response.text
                     else:
-                        # Legacy SDK call - switch model if needed
                         if self.current_model != model_name:
                             self._create_model(model_name)
-                        
                         response = self.model.generate_content(prompt)
                         if response and response.text:
-                            logger.info(f"✅ Response received from {model_name}")
                             return response.text
-                    
-                    logger.warning(f"⚠️ Empty response from {model_name}")
-                        
+                            
                 except Exception as e:
                     error_msg = str(e).lower()
-                    error_str = str(e)
                     
-                    # Check for model not found errors (404) FIRST - skip to next model immediately
-                    if "404" in error_str or "not found" in error_msg or "not_found" in error_msg:
+                    if "404" in str(e) or "not found" in error_msg:
                         logger.warning(f"⚠️ Model {model_name} not found, trying next...")
-                        break  # Try next model immediately
+                        break
                     
-                    # Check for rate limit / quota errors (429)
                     is_rate_limit = any(x in error_msg for x in [
-                        "429", "quota", "rate", "resource", "exhausted", 
-                        "limit", "capacity", "overloaded"
+                        "429", "quota", "rate", "exhausted", "limit"
                     ])
                     
                     if is_rate_limit:
-                        logger.warning(f"⚠️ Rate limited on {model_name}: {error_str[:100]}")
-                        
-                        # If last attempt for this model, try next model
                         if attempt >= RETRY_CONFIG["max_retries"] - 1:
-                            logger.info(f"🔄 Switching to next model...")
-                            break  # Exit retry loop, try next model
-                        
-                        # Wait before retry
-                        wait_time = min(
-                            RETRY_CONFIG["base_delay"] * (2 ** attempt),
-                            RETRY_CONFIG["max_delay"]
-                        )
-                        logger.info(f"   Waiting {wait_time}s before retry...")
+                            break
+                        wait_time = RETRY_CONFIG["base_delay"] * (2 ** attempt)
                         time.sleep(wait_time)
                         continue
                     
-                    # Check for safety filter blocks
-                    if "safety" in error_msg or "blocked" in error_msg:
-                        logger.warning("⚠️ Response blocked by safety filter")
-                        return None
-                    
-                    # Other errors
-                    logger.error(f"❌ Gemini API error: {e}")
-                    
-                    if attempt < RETRY_CONFIG["max_retries"] - 1:
-                        wait_time = RETRY_CONFIG["base_delay"] * (2 ** attempt)
-                        time.sleep(wait_time)
-                    else:
-                        break  # Try next model
+                    logger.error(f"❌ Gemini error: {e}")
+                    if attempt >= RETRY_CONFIG["max_retries"] - 1:
+                        break
         
-        logger.error("❌ All models failed, using fallback")
         return None
     
     def _parse_json_response(self, response_text: str) -> Optional[Dict]:
-        """Parse JSON from Gemini response, handling common issues"""
-        
+        """Parse JSON from response"""
         if not response_text:
             return None
         
-        # Clean up the response
         text = response_text.strip()
         
-        # Remove markdown code blocks if present
+        # Remove markdown code blocks
         if text.startswith("```json"):
             text = text[7:]
         if text.startswith("```"):
             text = text[3:]
         if text.endswith("```"):
             text = text[:-3]
-        
         text = text.strip()
         
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ JSON parse error: {e}")
-            
-            # Try to extract JSON from the response
+        except json.JSONDecodeError:
             import re
             json_match = re.search(r'\{[\s\S]*\}', text)
             if json_match:
                 try:
                     return json.loads(json_match.group())
-                except json.JSONDecodeError:
+                except:
                     pass
-            
-            logger.error(f"❌ Could not parse response as JSON: {text[:200]}...")
             return None
     
-    def _validate_response(self, parsed: Dict) -> Dict:
-        """Validate and normalize the parsed response"""
+    def _validate_response(self, parsed: Dict, conflicts: List[Dict]) -> Dict:
+        """Validate and enhance the response"""
         
-        # Required fields with defaults
-        # NOTE: Using 'score' to match app.py expectations (not 'confidence')
         defaults = {
             "recommendation": "HOLD",
-            "score": 0.5,  # app.py expects 'score', not 'confidence'
-            "insight": "Unable to generate detailed analysis.",
-            "reasoning": "Insufficient data for confident recommendation.",
-            "risks": [
-                "Market volatility may impact predictions",
-                "Model uncertainty affects reliability", 
-                "External factors not captured in analysis"
-            ],
-            "key_factors": ["Technical indicators", "Price momentum", "Sentiment"],
+            "score": 0.5,
+            "insight": "Unable to generate analysis.",
+            "reasoning": "Insufficient data.",
+            "risks": ["Market volatility", "Model uncertainty", "External factors"],
+            "key_factors": [],
             "entry_price": None,
             "target_price": None,
-            "stop_loss": None
+            "stop_loss": None,
+            "conflicts_detected": [],
+            "self_reflection": {
+                "potential_issues": [],
+                "confidence_adjustment": "none",
+                "final_check": "passed"
+            }
         }
         
         result = defaults.copy()
         
-        # Update with parsed values
         for key in defaults:
             if key in parsed and parsed[key] is not None:
                 result[key] = parsed[key]
         
-        # Handle 'confidence' -> 'score' mapping (Gemini may return either)
-        if "confidence" in parsed and parsed["confidence"] is not None:
+        # Handle confidence -> score mapping
+        if "confidence" in parsed:
             result["score"] = parsed["confidence"]
         
         # Validate recommendation
-        valid_recs = ["BUY", "SELL", "HOLD"]
-        if result["recommendation"].upper() not in valid_recs:
+        rec = str(result["recommendation"]).upper()
+        if rec not in ["BUY", "SELL", "HOLD"]:
             result["recommendation"] = "HOLD"
         else:
-            result["recommendation"] = result["recommendation"].upper()
+            result["recommendation"] = rec
         
-        # Validate score (0.0 to 1.0)
+        # Validate score
         try:
             result["score"] = max(0.0, min(1.0, float(result["score"])))
-        except (TypeError, ValueError):
+        except:
             result["score"] = 0.5
         
-        # Ensure risks is a list
-        if not isinstance(result["risks"], list):
-            result["risks"] = [str(result["risks"])]
+        # Add pre-detected conflicts if LLM didn't return them
+        if not result["conflicts_detected"] and conflicts:
+            result["conflicts_detected"] = conflicts
         
-        # Ensure key_factors is a list
-        if not isinstance(result["key_factors"], list):
-            result["key_factors"] = [str(result["key_factors"])]
+        # Adjust confidence based on conflicts
+        if len(conflicts) >= 2 and result["score"] > 0.75:
+            result["score"] = min(result["score"], 0.70)
+            logger.info(f"📉 Reduced confidence due to {len(conflicts)} conflicts")
         
-        # Add source info
-        result["source"] = "gemini_llm"
-        result["model"] = GEMINI_CONFIG["model"]
+        # Add metadata
+        result["source"] = "gemini_enhanced"
+        result["model"] = self.current_model
+        result["conflict_count"] = len(conflicts)
         
         return result
+    
+    def _generate_fallback_response(
+        self,
+        coin_symbol: str,
+        market_data: Dict,
+        prediction_data: Dict,
+        technical_indicators: Dict,
+        conflicts: List[Dict]
+    ) -> Dict:
+        """Generate rule-based fallback when Gemini fails"""
+        
+        current_price = market_data.get('price_usd', 0)
+        ensemble = prediction_data.get('ensemble', [])
+        model_agreement = prediction_data.get('model_agreement', 0.5)
+        rsi = technical_indicators.get('rsi', 50)
+        
+        predicted_price = ensemble[-1] if ensemble else current_price
+        expected_roi = ((predicted_price - current_price) / current_price * 100) if current_price > 0 else 0
+        
+        # Count signals
+        bullish_signals = 0
+        bearish_signals = 0
+        
+        if expected_roi > 3:
+            bullish_signals += 1
+        elif expected_roi < -3:
+            bearish_signals += 1
+            
+        if rsi < 40:
+            bullish_signals += 1
+        elif rsi > 60:
+            bearish_signals += 1
+            
+        if model_agreement > 0.75:
+            if expected_roi > 0:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+        
+        # Reduce confidence if conflicts exist
+        conflict_penalty = len(conflicts) * 0.05
+        
+        # Decision
+        if bullish_signals >= 2 and bearish_signals == 0:
+            recommendation = "BUY"
+            confidence = min(0.80 - conflict_penalty, 0.85)
+        elif bearish_signals >= 2 and bullish_signals == 0:
+            recommendation = "SELL"
+            confidence = min(0.75 - conflict_penalty, 0.80)
+        else:
+            recommendation = "HOLD"
+            confidence = 0.55
+        
+        # Build conflict resolution text
+        if conflicts:
+            conflict_text = f" Detected {len(conflicts)} conflicting signals - confidence adjusted."
+        else:
+            conflict_text = ""
+        
+        return {
+            "recommendation": recommendation,
+            "score": confidence,
+            "insight": f"{coin_symbol} shows {expected_roi:+.1f}% forecast with RSI at {rsi:.0f}.{conflict_text}",
+            "reasoning": f"Based on {bullish_signals} bullish and {bearish_signals} bearish signals.",
+            "risks": [
+                "API fallback used - limited analysis",
+                "Market volatility may impact predictions",
+                "External factors not fully captured"
+            ],
+            "key_factors": [
+                f"Forecast: {expected_roi:+.1f}%",
+                f"RSI: {rsi:.0f}",
+                f"Model Agreement: {model_agreement:.0%}"
+            ],
+            "conflicts_detected": conflicts,
+            "self_reflection": {
+                "potential_issues": ["Fallback mode - limited reasoning"],
+                "confidence_adjustment": "reduced",
+                "final_check": "fallback"
+            },
+            "entry_price": technical_indicators.get('support'),
+            "target_price": predicted_price if recommendation == "BUY" else None,
+            "stop_loss": technical_indicators.get('support', current_price * 0.95) * 0.95 if recommendation == "BUY" else None,
+            "source": "enhanced_fallback",
+            "model": "rule_based_v3",
+            "conflict_count": len(conflicts)
+        }
     
     def generate_insights(
         self,
@@ -489,242 +613,84 @@ Respond with ONLY valid JSON, no other text."""
         horizon_days: int = 7
     ) -> Dict:
         """
-        Generate investment insights using Gemini LLM
-        
-        Args:
-            coin_symbol: Cryptocurrency symbol (e.g., "BTC")
-            market_data: Current market metrics
-            sentiment_data: News sentiment analysis
-            technical_indicators: Technical analysis metrics
-            prediction_data: ML model predictions
-            top_headlines: Recent news headlines
-            horizon_days: Forecast horizon
-            
-        Returns:
-            Dictionary with recommendation, confidence, insights, risks
+        Generate insights with conflict resolution and self-reflection.
+        All done in a SINGLE Gemini call.
         """
         
-        logger.info(f"🤖 Generating Gemini insights for {coin_symbol}...")
+        logger.info(f"🤖 Enhanced analysis for {coin_symbol}...")
+        
+        # Step 1: Detect conflicts BEFORE calling LLM
+        conflicts = self.conflict_detector.detect_conflicts(
+            market_data=market_data,
+            technical_indicators=technical_indicators,
+            sentiment_data=sentiment_data,
+            prediction_data=prediction_data
+        )
+        
+        if conflicts:
+            logger.info(f"⚠️ Detected {len(conflicts)} signal conflicts")
+            for c in conflicts:
+                logger.info(f"   - {c['type']}: {c['severity']}")
+        else:
+            logger.info("✅ No signal conflicts detected")
         
         try:
-            # Build the prompt
-            prompt = self._build_analysis_prompt(
+            # Step 2: Build enhanced prompt with conflicts + self-reflection request
+            prompt = self._build_enhanced_prompt(
                 coin_symbol=coin_symbol,
                 market_data=market_data,
                 sentiment_data=sentiment_data,
                 technical_indicators=technical_indicators,
                 prediction_data=prediction_data,
                 top_headlines=top_headlines,
-                horizon_days=horizon_days
+                horizon_days=horizon_days,
+                conflicts=conflicts
             )
             
-            # Call Gemini API
+            # Step 3: Single Gemini call (quota efficient!)
             response_text = self._call_gemini_with_retry(prompt)
             
             if not response_text:
-                logger.warning("⚠️ No response from Gemini, using fallback")
+                logger.warning("⚠️ No Gemini response, using fallback")
                 return self._generate_fallback_response(
-                    coin_symbol, market_data, prediction_data, technical_indicators
+                    coin_symbol, market_data, prediction_data, 
+                    technical_indicators, conflicts
                 )
             
-            # Parse JSON response
+            # Step 4: Parse and validate
             parsed = self._parse_json_response(response_text)
             
             if not parsed:
-                logger.warning("⚠️ Could not parse Gemini response, using fallback")
+                logger.warning("⚠️ Could not parse response, using fallback")
                 return self._generate_fallback_response(
-                    coin_symbol, market_data, prediction_data, technical_indicators
+                    coin_symbol, market_data, prediction_data,
+                    technical_indicators, conflicts
                 )
             
-            # Validate and normalize
-            result = self._validate_response(parsed)
+            result = self._validate_response(parsed, conflicts)
             
-            logger.info(f"✅ Gemini insight: {result['recommendation']} "
-                       f"(score: {result['score']:.0%})")
+            # Log self-reflection results
+            reflection = result.get('self_reflection', {})
+            if reflection.get('confidence_adjustment') == 'reduced':
+                logger.info("📉 Self-reflection reduced confidence")
+            elif reflection.get('confidence_adjustment') == 'increased':
+                logger.info("📈 Self-reflection increased confidence")
+            
+            logger.info(f"✅ Enhanced insight: {result['recommendation']} "
+                       f"(score: {result['score']:.0%}, conflicts: {len(conflicts)})")
             
             return result
             
         except Exception as e:
-            logger.error(f"❌ Error generating Gemini insights: {e}")
+            logger.error(f"❌ Enhanced analysis error: {e}")
             return self._generate_fallback_response(
-                coin_symbol, market_data, prediction_data, technical_indicators
+                coin_symbol, market_data, prediction_data,
+                technical_indicators, conflicts
             )
-    
-    def _generate_fallback_response(
-        self,
-        coin_symbol: str,
-        market_data: Dict,
-        prediction_data: Dict,
-        technical_indicators: Dict
-    ) -> Dict:
-        """Generate a safe fallback response when Gemini fails"""
-        
-        logger.info("📋 Using enhanced fallback rule-based response")
-        
-        # Extract data
-        ensemble_preds = prediction_data.get('ensemble', [])
-        current_price = market_data.get('price_usd', 0)
-        model_agreement = prediction_data.get('model_agreement', 0.5)
-        rsi = technical_indicators.get('rsi', 50)
-        trend = technical_indicators.get('trend', 'sideways')
-        volatility = technical_indicators.get('volatility', 0.05)
-        
-        # Calculate expected ROI
-        if ensemble_preds and current_price > 0:
-            predicted_price = ensemble_preds[-1]
-            expected_roi = ((predicted_price - current_price) / current_price) * 100
-        else:
-            expected_roi = 0
-        
-        # Enhanced scoring system
-        bullish_score = 0
-        bearish_score = 0
-        factors = []
-        
-        # 1. Forecast direction and magnitude
-        if expected_roi > 8:
-            bullish_score += 3
-            factors.append(f"Strong +{expected_roi:.1f}% forecast")
-        elif expected_roi > 4:
-            bullish_score += 2
-            factors.append(f"Positive +{expected_roi:.1f}% forecast")
-        elif expected_roi > 2:
-            bullish_score += 1
-        elif expected_roi < -8:
-            bearish_score += 3
-            factors.append(f"Bearish {expected_roi:.1f}% forecast")
-        elif expected_roi < -4:
-            bearish_score += 2
-        elif expected_roi < -2:
-            bearish_score += 1
-        
-        # 2. Model agreement (high agreement = confidence boost)
-        if model_agreement > 0.85:
-            if expected_roi > 0:
-                bullish_score += 2
-            else:
-                bearish_score += 2
-            factors.append(f"High model consensus ({model_agreement:.0%})")
-        elif model_agreement > 0.70:
-            if expected_roi > 0:
-                bullish_score += 1
-            else:
-                bearish_score += 1
-        elif model_agreement < 0.50:
-            # Low agreement reduces confidence
-            bullish_score = max(0, bullish_score - 1)
-            bearish_score = max(0, bearish_score - 1)
-            factors.append(f"Low model agreement ({model_agreement:.0%})")
-        
-        # 3. RSI signals
-        if rsi < 30:
-            bullish_score += 2
-            factors.append(f"Oversold (RSI {rsi:.0f})")
-        elif rsi < 40:
-            bullish_score += 1
-        elif rsi > 70:
-            bearish_score += 2
-            factors.append(f"Overbought (RSI {rsi:.0f})")
-        elif rsi > 60:
-            bearish_score += 1
-        
-        # 4. Trend alignment
-        if trend in ["uptrend", "strong_uptrend"]:
-            bullish_score += 1
-            factors.append("Uptrend momentum")
-        elif trend in ["downtrend", "strong_downtrend"]:
-            bearish_score += 1
-            factors.append("Downtrend pressure")
-        
-        # 5. Volatility consideration
-        if volatility > 0.08:
-            factors.append(f"High volatility ({volatility:.1%})")
-        
-        # Calculate net score and make decision
-        net_score = bullish_score - bearish_score
-        
-        # Decision logic
-        if model_agreement < 0.50:
-            recommendation = "HOLD"
-            confidence = 0.45
-            reasoning = f"Low model agreement ({model_agreement:.0%}) creates too much uncertainty"
-        elif net_score >= 3:
-            recommendation = "BUY"
-            confidence = min(0.85, 0.60 + net_score * 0.05)
-            reasoning = f"Strong bullish signals: {expected_roi:+.1f}% forecast, RSI {rsi:.0f}, {model_agreement:.0%} consensus"
-        elif net_score >= 1 and expected_roi > 3:
-            recommendation = "BUY"
-            confidence = min(0.75, 0.55 + net_score * 0.05)
-            reasoning = f"Bullish setup: {expected_roi:+.1f}% forecast supported by {model_agreement:.0%} model agreement"
-        elif net_score <= -3:
-            recommendation = "SELL"
-            confidence = min(0.80, 0.60 + abs(net_score) * 0.05)
-            reasoning = f"Bearish signals: {expected_roi:+.1f}% forecast, RSI {rsi:.0f}"
-        elif net_score <= -1 and expected_roi < -3:
-            recommendation = "SELL"
-            confidence = min(0.70, 0.55 + abs(net_score) * 0.05)
-            reasoning = f"Bearish setup: {expected_roi:+.1f}% forecast with weakening technicals"
-        else:
-            recommendation = "HOLD"
-            confidence = 0.55
-            reasoning = f"Mixed signals with {expected_roi:+.1f}% forecast and RSI {rsi:.0f}"
-        
-        # Build insight text
-        if recommendation == "BUY":
-            insight = (f"{coin_symbol} shows bullish setup with {expected_roi:+.1f}% expected return over forecast period. "
-                      f"Model agreement at {model_agreement:.0%} supports conviction. "
-                      f"RSI {rsi:.0f} suggests {'good entry point' if rsi < 50 else 'momentum continues'}.")
-        elif recommendation == "SELL":
-            insight = (f"{coin_symbol} shows bearish signals with {expected_roi:+.1f}% projected move. "
-                      f"Consider reducing exposure or taking profits. "
-                      f"RSI {rsi:.0f} indicates {'potential bounce but trend remains weak' if rsi < 40 else 'downside risk'}.")
-        else:
-            insight = (f"{coin_symbol} presents mixed signals with {expected_roi:+.1f}% forecast. "
-                      f"Model agreement: {model_agreement:.0%}. "
-                      f"Wait for clearer directional confirmation before taking action.")
-        
-        # Generate risks
-        risks = []
-        if volatility > 0.05:
-            risks.append(f"Elevated volatility ({volatility:.1%}) increases position risk")
-        if model_agreement < 0.70:
-            risks.append(f"Model divergence ({model_agreement:.0%}) reduces forecast reliability")
-        if abs(expected_roi) < 3:
-            risks.append("Limited upside potential may not justify entry")
-        
-        # Add default risks if needed
-        default_risks = [
-            "Cryptocurrency markets remain highly volatile",
-            "External factors may override technical signals",
-            "Always use proper position sizing and stop-losses"
-        ]
-        while len(risks) < 3:
-            for risk in default_risks:
-                if risk not in risks and len(risks) < 3:
-                    risks.append(risk)
-                    break
-        
-        return {
-            "recommendation": recommendation,
-            "score": confidence,
-            "insight": insight,
-            "reasoning": reasoning,
-            "risks": risks[:3],
-            "key_factors": factors[:4] if factors else [
-                f"Forecast: {expected_roi:+.1f}%",
-                f"RSI: {rsi:.0f}",
-                f"Model Agreement: {model_agreement:.0%}"
-            ],
-            "entry_price": technical_indicators.get('support') if recommendation == "BUY" else None,
-            "target_price": predicted_price if recommendation == "BUY" else None,
-            "stop_loss": technical_indicators.get('support', current_price * 0.95) * 0.95 if recommendation == "BUY" else None,
-            "source": "enhanced_fallback",
-            "model": "rule_based_v2"
-        }
 
 
 # ============================================================================
-# PUBLIC INTERFACE (Drop-in replacement for original)
+# PUBLIC INTERFACE (Drop-in replacement)
 # ============================================================================
 
 def generate_insights(
@@ -738,35 +704,25 @@ def generate_insights(
     horizon_days: int = 7
 ) -> Dict:
     """
-    Generate investment insights using Gemini LLM
+    Generate investment insights with conflict resolution and self-reflection.
     
-    This is a drop-in replacement for the original rule-based function.
+    Drop-in replacement for original generate_insights function.
     Same signature, enhanced output.
-    
-    Args:
-        api_key: Google AI API key
-        coin_symbol: Cryptocurrency symbol
-        market_data: Current market metrics
-        sentiment_data: News sentiment analysis
-        technical_indicators: Technical analysis metrics
-        prediction_data: ML model predictions
-        top_headlines: Recent news headlines
-        horizon_days: Forecast horizon
-        
-    Returns:
-        Dictionary with recommendation, confidence, insights, risks
     """
     
-    # Validate API key
     if not api_key or api_key.strip() == "":
-        logger.warning("⚠️ No API key provided, using fallback")
-        generator = GeminiInsightGenerator.__new__(GeminiInsightGenerator)
+        logger.warning("⚠️ No API key, using fallback")
+        conflicts = ConflictDetector.detect_conflicts(
+            market_data, technical_indicators, sentiment_data, prediction_data
+        )
+        generator = EnhancedGeminiInsightGenerator.__new__(EnhancedGeminiInsightGenerator)
+        generator.conflict_detector = ConflictDetector()
         return generator._generate_fallback_response(
-            coin_symbol, market_data, prediction_data, technical_indicators
+            coin_symbol, market_data, prediction_data, technical_indicators, conflicts
         )
     
     try:
-        generator = GeminiInsightGenerator(api_key)
+        generator = EnhancedGeminiInsightGenerator(api_key)
         return generator.generate_insights(
             coin_symbol=coin_symbol,
             market_data=market_data,
@@ -777,27 +733,19 @@ def generate_insights(
             horizon_days=horizon_days
         )
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Gemini: {e}")
-        # Return safe fallback
+        logger.error(f"❌ Failed to initialize enhanced Gemini: {e}")
         return {
             "recommendation": "HOLD",
-            "score": 0.40,  # Use 'score' to match app.py expectations
-            "insight": f"Unable to analyze {coin_symbol} due to API error. "
-                      f"Please verify your Gemini API key in Streamlit secrets.",
-            "reasoning": f"API initialization failed: {str(e)[:100]}",
-            "risks": [
-                "Analysis unavailable - use caution",
-                "Verify API key configuration",
-                "Try again in a few minutes"
-            ],
-            "key_factors": ["API Error"],
-            "entry_price": None,
-            "target_price": None,
-            "stop_loss": None,
+            "score": 0.40,
+            "insight": f"Analysis error: {str(e)[:100]}",
+            "reasoning": "API error occurred",
+            "risks": ["Analysis unavailable", "Verify API key", "Try again later"],
+            "key_factors": ["Error"],
+            "conflicts_detected": [],
+            "self_reflection": {"final_check": "error"},
             "source": "error",
             "model": "none"
         }
-
 
 # ============================================================================
 # BACKWARDS COMPATIBILITY
