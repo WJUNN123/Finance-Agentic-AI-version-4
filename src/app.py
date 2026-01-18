@@ -1800,7 +1800,7 @@ def main():
     
         # crypto request but no coin mentioned
         if coin_id is None:
-            st.warning("Please choose a coin (click BTC/ETH/...) or mention it in your question.")
+            st.warning("Please dont ask others question except from crypto asset like Bitcoin, Ethreum, BNB and others.")
             return
     
         with st.spinner("🔄 Analyzing... This may take 30-60 seconds..."):
