@@ -167,33 +167,41 @@ def get_recommendation_style(rating: str) -> Tuple[str, str, str]:
         return ("HOLD / WAIT", "🟡", "#f59e0b")
 
 def parse_user_message(message: str) -> Dict:
-    """Parse user message to extract intent"""
+    """Parse user message to extract intent (avoid defaulting to bitcoin)"""
     import re
-    msg_lower = message.lower()
-    
+    msg_lower = (message or "").lower().strip()
+
     # Extract coin
     coin_id = None
+
     for name, cid in COIN_NAME_TO_ID.items():
         if name in msg_lower:
             coin_id = cid
             break
+
     if not coin_id:
         for sym, cid in COIN_SYMBOL_TO_ID.items():
             if re.search(r'\b' + re.escape(sym) + r'\b', msg_lower):
                 coin_id = cid
                 break
-    if not coin_id:
-        coin_id = "bitcoin"  # Default
-    
+
     # Extract horizon
-    horizon_days = 7  # Default
+    horizon_days = 7
     m = re.search(r'(\d+)\s*(day|days|d)\b', msg_lower)
     if m:
         horizon_days = int(m.group(1))
-    
+
+    # Basic crypto intent keywords (simple and safe)
+    CRYPTO_KEYWORDS = [
+        "price", "forecast", "predict", "prediction", "trend", "chart", "market",
+        "buy", "sell", "hold", "support", "resistance", "rsi", "sentiment"
+    ]
+    is_crypto = (coin_id is not None) or any(k in msg_lower for k in CRYPTO_KEYWORDS)
+
     return {
         'coin_id': coin_id,
-        'horizon_days': horizon_days
+        'horizon_days': horizon_days,
+        'is_crypto': is_crypto
     }
 
 def calculate_model_agreement(lstm_preds, xgb_preds, ensemble_preds):
@@ -220,6 +228,46 @@ def calculate_model_agreement(lstm_preds, xgb_preds, ensemble_preds):
         logger.error(f"Error calculating model agreement: {e}")
         return 0.5
         
+def is_rate_limit_error(e: Exception) -> bool:
+    # Works for requests HTTPError and also string-based errors from wrappers
+    try:
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) == 429:
+            return True
+    except Exception:
+        pass
+
+    msg = str(e).lower()
+    return ("429" in msg) or ("too many requests" in msg) or ("rate limit" in msg)
+
+
+def with_backoff(fn, max_retries: int = 3, base_delay: float = 1.0):
+    """Retry wrapper with exponential backoff for 429"""
+    delay = base_delay
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if is_rate_limit_error(e) and attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise last_err
+
+def is_rate_limit_error(e: Exception) -> bool:
+    """
+    Detect CoinGecko / HTTP 429 rate limit errors safely.
+    Works with requests errors and generic exceptions.
+    """
+    msg = str(e).lower()
+    return (
+        "429" in msg or
+        "too many requests" in msg or
+        "rate limit" in msg
+    )
+    
 # ============================================================================
 # STAGE 3: INPUT VALIDATION FUNCTIONS (NEW)
 # ============================================================================
@@ -318,33 +366,48 @@ def analyze_cryptocurrency(
         cg_fetcher = get_cg_fetcher()
         
         try:
-            market_df = cg_fetcher.get_market_data([coin_id])
+            market_df = with_backoff(
+                lambda: cg_fetcher.get_market_data([coin_id]),
+                max_retries=3,
+                base_delay=1.0
+            )
+        
             if market_df.empty:
                 return {
                     'error': f'❌ No market data available for {coin_id}',
                     'suggestion': 'This coin might not be supported yet. Try: Bitcoin, Ethereum, or Solana.',
                     'error_type': 'data_not_found'
                 }
+        
         except requests.exceptions.Timeout:
             return {
                 'error': '⏱️ Request timed out',
                 'suggestion': 'The API is taking too long. Please try again in a moment.',
                 'error_type': 'timeout'
             }
+        
         except requests.exceptions.ConnectionError:
             return {
                 'error': '🌐 Connection error',
                 'suggestion': 'Unable to connect to data provider. Check your internet connection.',
                 'error_type': 'connection'
             }
+        
         except Exception as e:
+            # ✅ NEW: explicit handling for CoinGecko 429
+            if is_rate_limit_error(e):
+                return {
+                    'error': '🚦 Rate limit reached (429) from data provider',
+                    'suggestion': 'Too many users are requesting live data. Please wait 30–60 seconds and try again.',
+                    'error_type': 'api_error'
+                }
+        
             logger.error(f"Market data error: {e}", exc_info=True)
             return {
                 'error': f'❌ Error fetching market data: {str(e)}',
                 'suggestion': 'Please try again. If the problem persists, try a different cryptocurrency.',
                 'error_type': 'api_error'
             }
-        
         market_row = market_df.iloc[0]
         market_data = {
             'coin': coin_id,
@@ -357,7 +420,7 @@ def analyze_cryptocurrency(
         }
         
         # Get historical data
-        historical_df = cg_fetcher.get_historical_data(coin_id, days=180)
+        historical_df = with_backoff(lambda: cg_fetcher.get_historical_data(coin_id, days=180), max_retries=3, base_delay=1.0)
         if historical_df.empty or 'price' not in historical_df.columns:
             return {
                 'error': 'Insufficient historical data',
@@ -426,7 +489,7 @@ def analyze_cryptocurrency(
                 horizon=horizon_days,
                 coin_id=coin_id,  # STAGE 1: For caching
                 use_cache=True,   # STAGE 1: Enable caching
-                window_size=CONFIG['models']['lstm']['window_size']
+                window_size=15
             )
             
             lstm_preds = predictions['lstm']
@@ -1724,10 +1787,28 @@ def main():
     if analyze_button and user_message.strip():
         with st.spinner("🔄 Analyzing... This may take 30-60 seconds..."):
             parsed = parse_user_message(user_message)
-            coin_id = parsed['coin_id']
-            horizon = parsed['horizon_days']
+            coin_id = parsed.get('coin_id')
+            horizon = parsed.get('horizon_days', 7)
+            is_crypto = parsed.get('is_crypto', False)
             
-            result = analyze_cryptocurrency(coin_id, horizon)
+            # If not crypto-related, do NOT call CoinGecko
+            if not is_crypto:
+                st.info(
+                    "I can help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
+                    "Try: **'BTC 7-day forecast'** or click a coin button above."
+                )
+            else:
+                # If user asked crypto but didn't specify a coin, ask them to choose
+                if coin_id is None:
+                    st.warning("Please choose a coin (click BTC/ETH/...) or mention it in your question.")
+                else:
+                    result = analyze_cryptocurrency(coin_id, horizon)
+            
+                    if 'error' in result:
+                        display_enhanced_error(result)
+                    else:
+                        st.session_state.last_result = result
+                        st.session_state.last_horizon = horizon
             
             if 'error' in result:
                 display_enhanced_error(result)  # STAGE 3: Enhanced error display
