@@ -193,9 +193,9 @@ def parse_user_message(message: str) -> Dict:
 
     # Basic crypto intent keywords (simple and safe)
     CRYPTO_KEYWORDS = [
-        "price", "forecast", "predict", "prediction", "trend", "chart", "market",
-        "buy", "sell", "hold", "support", "resistance", "rsi", "sentiment"
-    ]
+            "price", "forecast", "predict", "prediction", "trend", "chart", "market",
+            "support", "resistance", "rsi", "sentiment"
+        ]
     is_crypto = (coin_id is not None) or any(k in msg_lower for k in CRYPTO_KEYWORDS)
 
     return {
@@ -1800,7 +1800,10 @@ def main():
     
         # crypto request but no coin mentioned
         if coin_id is None:
-            st.warning("Please dont ask others question except from crypto asset like Bitcoin, Ethreum, BNB and others.")
+            st.info(
+                "I can only help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
+                "Try ask a question: **'BTC 7-day forecast'**."
+            )
             return
     
         with st.spinner("🔄 Analyzing... This may take 30-60 seconds..."):
