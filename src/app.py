@@ -1785,36 +1785,32 @@ def main():
     
     # Process query
     if analyze_button and user_message.strip():
+        parsed = parse_user_message(user_message)
+        coin_id = parsed.get('coin_id')
+        horizon = parsed.get('horizon_days', 7)
+        is_crypto = parsed.get('is_crypto', False)
+    
+        if not is_crypto:
+            st.info(
+                "I can help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
+                "Try: **'BTC 7-day forecast'** or click a coin button above."
+            )
+            # ✅ IMPORTANT: stop here so we don't reference 'result' later
+            return
+    
+        # crypto request but no coin mentioned
+        if coin_id is None:
+            st.warning("Please choose a coin (click BTC/ETH/...) or mention it in your question.")
+            return
+    
         with st.spinner("🔄 Analyzing... This may take 30-60 seconds..."):
-            parsed = parse_user_message(user_message)
-            coin_id = parsed.get('coin_id')
-            horizon = parsed.get('horizon_days', 7)
-            is_crypto = parsed.get('is_crypto', False)
-            
-            # If not crypto-related, do NOT call CoinGecko
-            if not is_crypto:
-                st.info(
-                    "I can help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
-                    "Try: **'BTC 7-day forecast'** or click a coin button above."
-                )
-            else:
-                # If user asked crypto but didn't specify a coin, ask them to choose
-                if coin_id is None:
-                    st.warning("Please choose a coin (click BTC/ETH/...) or mention it in your question.")
-                else:
-                    result = analyze_cryptocurrency(coin_id, horizon)
-            
-                    if 'error' in result:
-                        display_enhanced_error(result)
-                    else:
-                        st.session_state.last_result = result
-                        st.session_state.last_horizon = horizon
-            
-            if 'error' in result:
-                display_enhanced_error(result)  # STAGE 3: Enhanced error display
-            else:
-                st.session_state.last_result = result
-                st.session_state.last_horizon = horizon
+            result = analyze_cryptocurrency(coin_id, horizon)
+    
+        if 'error' in result:
+            display_enhanced_error(result)
+        else:
+            st.session_state.last_result = result
+            st.session_state.last_horizon = horizon
     
     # Display results
     if st.session_state.last_result:
