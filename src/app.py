@@ -1792,8 +1792,8 @@ def main():
     
         if not is_crypto:
             st.info(
-                "I can help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
-                "Try: **'BTC 7-day forecast'** or click a coin button above."
+                "I can only help with crypto analysis (price, trend, forecast) for BTC, ETH, BNB, XRP, SOL, ADA, DOGE.\n\n"
+                "Try ask a question: **'BTC 7-day forecast'**."
             )
             # ✅ IMPORTANT: stop here so we don't reference 'result' later
             return
