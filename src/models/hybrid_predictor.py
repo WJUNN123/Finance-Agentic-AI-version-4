@@ -537,6 +537,59 @@ class HybridPredictor:
 
         return final_preds
 
+    # ------------------------
+    # Directional signals (derived from regression forecasts)
+    # ------------------------
+
+    @staticmethod
+    def compute_directional_signals(
+        forecast_prices: List[float],
+        current_price: float,
+        threshold_2pct: float = 0.02,
+        threshold_5pct: float = 0.05,
+    ) -> List[Dict[str, float | str | int]]:
+        """
+        Convert numeric price forecasts into directional labels like the benchmark tasks.
+
+        IMPORTANT:
+        - These labels are *derived* from regression outputs (not a separately trained classifier).
+        - They are meant for user interpretation in the UI (e.g., UP2/DOWN2), not to claim
+          benchmark-level superiority on the classification task.
+        """
+        if current_price <= 0:
+            raise ValueError("current_price must be > 0")
+
+        rows: List[Dict[str, float | str | int]] = []
+        for i, p in enumerate(forecast_prices, start=1):
+            pct_change = (float(p) - float(current_price)) / (float(current_price) + 1e-10)
+
+            # ±2%
+            if pct_change >= threshold_2pct:
+                sig2 = "UP2"
+            elif pct_change <= -threshold_2pct:
+                sig2 = "DOWN2"
+            else:
+                sig2 = "NEUTRAL"
+
+            # ±5%
+            if pct_change >= threshold_5pct:
+                sig5 = "UP5"
+            elif pct_change <= -threshold_5pct:
+                sig5 = "DOWN5"
+            else:
+                sig5 = "NEUTRAL"
+
+            rows.append({
+                "Day": int(i),
+                "ForecastPrice": float(p),
+                "PctChange": float(pct_change * 100.0),
+                "Signal_2pct": sig2,
+                "Signal_5pct": sig5,
+            })
+
+        return rows
+
+
 
 def train_and_predict(
     price_series: pd.Series,
@@ -547,8 +600,12 @@ def train_and_predict(
 ) -> Dict[str, List[float]]:
     """
     Train models and generate predictions with caching.
-    Output format unchanged:
-      {'lstm': [...], 'xgboost': [...], 'ensemble': [...]}
+
+    Output keys:
+      - 'lstm': 7-day numeric forecast (prices)
+      - 'xgboost': 7-day numeric forecast (prices)
+      - 'ensemble': 7-day numeric forecast (prices)
+      - 'directional': derived UP/DOWN/NEUTRAL labels per day (UP2/DOWN2 and UP5/DOWN5)
     """
     predictor = HybridPredictor(**kwargs)
 
@@ -566,8 +623,19 @@ def train_and_predict(
         if use_cache:
             predictor.save_models(coin_id, price_series)
 
+    lstm_out = predictor.predict_lstm(price_series, horizon)
+    xgb_out = predictor.predict_xgboost(price_series, horizon)
+    ensemble_out = predictor.predict_ensemble(price_series, horizon)
+
     return {
-        'lstm': predictor.predict_lstm(price_series, horizon),
-        'xgboost': predictor.predict_xgboost(price_series, horizon),
-        'ensemble': predictor.predict_ensemble(price_series, horizon)
+        'lstm': lstm_out,
+        'xgboost': xgb_out,
+        'ensemble': ensemble_out,
+        # Directional labels derived from the deployed regression forecasts.
+        # This gives you an "up/down" view (UP2/DOWN2/NEUTRAL, UP5/DOWN5/NEUTRAL)
+        # without changing your core production forecaster.
+        'directional': predictor.compute_directional_signals(
+            forecast_prices=ensemble_out,
+            current_price=float(price_series.iloc[-1]),
+        ),
     }
