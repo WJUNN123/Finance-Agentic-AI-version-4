@@ -515,9 +515,9 @@ def analyze_cryptocurrency(
             sig5 = None
             pct_change = None
             if i < len(directional_rows):
-                sig2 = directional_rows[i].get('signal_2pct')
-                sig5 = directional_rows[i].get('signal_5pct')
-                pct_change = directional_rows[i].get('pct_change')
+                sig2 = directional_rows[i].get('Signal_2pct') or directional_rows[i].get('signal_2pct')
+                sig5 = directional_rows[i].get('Signal_5pct') or directional_rows[i].get('signal_5pct')
+                pct_change = directional_rows[i].get('PctChange') if directional_rows[i].get('PctChange') is not None else directional_rows[i].get('pct_change')
 
             forecast_table.append({
                 'day': i + 1,
@@ -525,6 +525,7 @@ def analyze_cryptocurrency(
                 'lstm': lstm_preds[i] if i < len(lstm_preds) else None,
                 'xgboost': xgb_preds[i] if i < len(xgb_preds) else None,
                 'ensemble': ensemble_preds[i] if i < len(ensemble_preds) else None,
+                'ensemble_return_pct': pct_change,
                 'pct_change': pct_change,
                 'signal_2pct': sig2,
                 'signal_5pct': sig5,
@@ -1497,20 +1498,43 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
 
         # Optional: show benchmark-style directional labels derived from the deployed forecast
         if forecast_table and 'signal_2pct' in forecast_table[0]:
-            with st.expander("Show forecast table + directional labels (±2% / ±5%)", expanded=False):
+            with st.expander("Show forecast table + easy directional signals (7 days)", expanded=False):
                 df_fc = pd.DataFrame(forecast_table)
-                cols = [
-                    'day', 'date',
-                    'ensemble', 'ensemble_return_pct',
-                    'signal_2pct', 'signal_5pct'
-                ]
-                # Keep only columns that exist (safe against older cache)
-                cols = [c for c in cols if c in df_fc.columns]
-                st.dataframe(
-                    df_fc[cols],
-                    use_container_width=True,
-                    hide_index=True
-                )
+
+                # --- Friendly column names + formatting ---
+                def _map_signal(raw: str, strong: bool) -> str:
+                    if raw is None:
+                        return "No Clear Signal"
+                    s = str(raw).upper()
+                    if strong:
+                        if "UP" in s:
+                            return "Strong Upward Move"
+                        if "DOWN" in s:
+                            return "Strong Downward Move"
+                    else:
+                        if "UP" in s:
+                            return "Likely Upward Move"
+                        if "DOWN" in s:
+                            return "Likely Downward Move"
+                    return "No Clear Signal"
+
+                # Create display columns
+                df_fc["Forecast Price"] = df_fc["ensemble"].apply(lambda x: f"{float(x):,.0f}" if pd.notna(x) else "—")
+                df_fc["Moderate Price Move (±2%)"] = df_fc["signal_2pct"].apply(lambda x: _map_signal(x, strong=False))
+                df_fc["Strong Price Move (±5%)"] = df_fc["signal_5pct"].apply(lambda x: _map_signal(x, strong=True))
+
+                df_show = df_fc[["day", "date", "Forecast Price",
+                                 "Moderate Price Move (±2%)",
+                                 "Strong Price Move (±5%)"]].copy()
+                df_show = df_show.rename(columns={"day": "Day", "date": "Date"})
+
+                # Optional: quick 7-day summary (max move)
+                if "ensemble_return_pct" in df_fc.columns and df_fc["ensemble_return_pct"].notna().any():
+                    max_up = df_fc["ensemble_return_pct"].max()
+                    max_down = df_fc["ensemble_return_pct"].min()
+                    st.caption(f"7-day range vs current price: max {max_up:+.2f}% / min {max_down:+.2f}%")
+
+                st.dataframe(df_show, use_container_width=True, hide_index=True)
     
     with sidebar_col:
         st.markdown("### 🎯 Key Metrics")
