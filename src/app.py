@@ -501,18 +501,33 @@ def analyze_cryptocurrency(
             xgb_preds = []
             ensemble_preds = []
         
-        # Build forecast table
+        # Build forecast table (includes directional labels derived from regression forecasts)
         forecast_table = []
         last_date = historical_df.index[-1]
-        
+
+        directional_rows = predictions.get('directional', []) if isinstance(predictions, dict) else []
+
         for i in range(horizon_days):
-            forecast_date = last_date + pd.Timedelta(days=i+1)
+            forecast_date = last_date + pd.Timedelta(days=i + 1)
+
+            # Directional labels are optional (new feature). Keep None if unavailable.
+            sig2 = None
+            sig5 = None
+            pct_change = None
+            if i < len(directional_rows):
+                sig2 = directional_rows[i].get('signal_2pct')
+                sig5 = directional_rows[i].get('signal_5pct')
+                pct_change = directional_rows[i].get('pct_change')
+
             forecast_table.append({
                 'day': i + 1,
                 'date': forecast_date,
                 'lstm': lstm_preds[i] if i < len(lstm_preds) else None,
                 'xgboost': xgb_preds[i] if i < len(xgb_preds) else None,
-                'ensemble': ensemble_preds[i] if i < len(ensemble_preds) else None
+                'ensemble': ensemble_preds[i] if i < len(ensemble_preds) else None,
+                'pct_change': pct_change,
+                'signal_2pct': sig2,
+                'signal_5pct': sig5,
             })
         
         # ====================================================================
@@ -1479,6 +1494,23 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+        # Optional: show benchmark-style directional labels derived from the deployed forecast
+        if forecast_table and 'signal_2pct' in forecast_table[0]:
+            with st.expander("Show forecast table + directional labels (±2% / ±5%)", expanded=False):
+                df_fc = pd.DataFrame(forecast_table)
+                cols = [
+                    'day', 'date',
+                    'ensemble', 'ensemble_return_pct',
+                    'signal_2pct', 'signal_5pct'
+                ]
+                # Keep only columns that exist (safe against older cache)
+                cols = [c for c in cols if c in df_fc.columns]
+                st.dataframe(
+                    df_fc[cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
     
     with sidebar_col:
         st.markdown("### 🎯 Key Metrics")
@@ -1832,18 +1864,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
