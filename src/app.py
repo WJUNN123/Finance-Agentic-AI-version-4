@@ -531,6 +531,45 @@ def analyze_cryptocurrency(
                 'signal_5pct': sig5,
             })
         
+        
+
+        # =========================================================
+        # 7-DAY CONSOLIDATED DIRECTIONAL SUMMARY (NEW)
+        # =========================================================
+        def summarize_7day_signal(forecast_table, current_price):
+            if not forecast_table or current_price <= 0:
+                return "No Clear Signal"
+
+            pct_changes = []
+            for row in forecast_table:
+                price = row.get('ensemble')
+                if price is not None:
+                    pct = (price - current_price) / current_price * 100
+                    pct_changes.append(pct)
+
+            if not pct_changes:
+                return "No Clear Signal"
+
+            max_up = max(pct_changes)
+            max_down = min(pct_changes)
+
+            if max_up >= 5:
+                return "Strong Upward Move (+5%)"
+            if max_down <= -5:
+                return "Strong Downward Move (-5%)"
+            if max_up >= 2:
+                return "Likely Upward Move (+2%)"
+            if max_down <= -2:
+                return "Likely Downward Move (-2%)"
+
+            return "No Clear Signal"
+
+        seven_day_summary = summarize_7day_signal(
+            forecast_table,
+            market_data['price_usd']
+        )
+
+
         # ====================================================================
         # 6. GENERATE AI INSIGHTS (GEMINI) WITH CONFIDENCE
         # ====================================================================
@@ -599,6 +638,7 @@ def analyze_cryptocurrency(
             'sentiment_confidence': sentiment_confidence,  # STAGE 2
             'sentiment_details': sentiment_df,
             'forecast_table': forecast_table,
+            'seven_day_summary': seven_day_summary,
             'predictions': {
                 'lstm': lstm_preds,
                 'xgboost': xgb_preds,
@@ -1533,6 +1573,9 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     max_up = df_fc["ensemble_return_pct"].max()
                     max_down = df_fc["ensemble_return_pct"].min()
                     st.caption(f"7-day range vs current price: max {max_up:+.2f}% / min {max_down:+.2f}%")
+
+                summary = result.get('seven_day_summary', 'No Clear Signal')
+                st.markdown(f\"**📌 7-Day Directional Outlook:** {summary}\")
 
                 st.dataframe(df_show, use_container_width=True, hide_index=True)
     
