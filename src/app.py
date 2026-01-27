@@ -1575,7 +1575,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                     st.caption(f"7-day range vs current price: max {max_up:+.2f}% / min {max_down:+.2f}%")
 
                 summary = result.get('seven_day_summary', 'No Clear Signal')
-                st.markdown(f\"**📌 7-Day Directional Outlook:** {summary}\")
+                st.markdown(f"**📌 7-Day Directional Outlook:** {summary}")
 
                 st.dataframe(df_show, use_container_width=True, hide_index=True)
     
