@@ -1572,7 +1572,7 @@ def render_summary_dashboard(result: Dict, horizon_days: int):
                 if "ensemble_return_pct" in df_fc.columns and df_fc["ensemble_return_pct"].notna().any():
                     max_up = df_fc["ensemble_return_pct"].max()
                     max_down = df_fc["ensemble_return_pct"].min()
-                    st.caption(f"7-day range vs current price: max {max_up:+.2f}% / min {max_down:+.2f}%")
+                    #st.caption(f"7-day range vs current price: max {max_up:+.2f}% / min {max_down:+.2f}%")
 
                 summary = result.get('seven_day_summary', 'No Clear Signal')
                 st.markdown(f"**📌 7-Day Directional Outlook:** {summary}")
